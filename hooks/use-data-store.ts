@@ -47,7 +47,15 @@ export function useCharacters() {
     await store.saveCharacter(char)
   }, [])
 
-  return { characters, loading, updateCharacter, addCharacter }
+  const removeCharacter = useCallback(async (id: string) => {
+    await store.deleteCharacter(id)
+  }, [])
+
+  const saveAll = useCallback(async (chars: Character[]) => {
+    await store.saveAllCharacters(chars)
+  }, [])
+
+  return { characters, loading, updateCharacter, addCharacter, removeCharacter, saveAll }
 }
 
 // ─── useScenes ───────────────────────────────────────────────────────────────
@@ -67,7 +75,7 @@ export function useScenes() {
 
   const updateScene = useCallback(async (updated: Scene) => {
     await store.saveScene(updated)
-  }, [])
+  }, []  )
 
   return { scenes, loading, updateScene }
 }

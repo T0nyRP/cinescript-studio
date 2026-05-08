@@ -115,7 +115,8 @@ export const EMBER_SCENES: Scene[] = [
       { id: "shot-6", order: 6, type: "close-up", angle: "low-angle", description: "Al-Rashid's hand moves to his belt — thumb pressing the dead man's switch. Red alarm strobes begin. His lips curl into a cold smile.", duration: 10, characters: ["omar-al-rashid"], action: "Al-Rashid activates Prometheus automated defense", lighting: "Red alarm strobe begins", dialogue: [{ characterId: "omar-al-rashid", characterName: "Al-Rashid", line: "You're too late, Mr. Maddox.", type: "spoken" }] },
       { id: "shot-7", order: 7, type: "extreme-close", angle: "dutch", description: "Jace's hand slams onto the neural interface terminal. Eyes roll back — cascades of electric blue digital light flood his irises. SYNAPSE surges forward.", duration: 10, characters: ["jace-maddox"], action: "Full SYNAPSE integration — consciousness merges with Prometheus", lighting: "Electric blue neural glow consuming frame", dialogue: [{ characterId: "jace-maddox", characterName: "Jace", line: "SYNAPSE — everything you've got.", type: "internal" }] },
       { id: "shot-8", order: 8, type: "wide", angle: "high-angle", description: "Abstract digital battle — SYNAPSE (warm gold light) vs Prometheus (cold blue ice). Corruption bars climb. 89%... 97%... 100%. Gold consumes everything.", duration: 10, characters: ["jace-maddox"], action: "SYNAPSE destroys Prometheus — 100% corruption complete", lighting: "Abstract digital — gold vs cold blue", dialogue: [] }
-    ]
+    ],
+    manuscriptSource: "CODENAME: EMBER — Book 1: The Istanbul Protocol",
   },
   {
     id: "scene-ch1-lab",
@@ -128,7 +129,8 @@ export const EMBER_SCENES: Scene[] = [
     actionLevel: "medium",
     emotionalTone: "Intense, defiant, consequential",
     location: "MIT Campus — AI Laboratory, 3:47 AM",
-    characters: ["jace-maddox"]
+    characters: ["jace-maddox"],
+    manuscriptSource: "CODENAME: EMBER — Book 1: The Istanbul Protocol",
   },
   {
     id: "scene-ch5-briefing",
@@ -141,7 +143,8 @@ export const EMBER_SCENES: Scene[] = [
     actionLevel: "medium",
     emotionalTone: "Tense anticipation, moral weight, quiet resolve",
     location: "Istanbul, Turkey — ORION Safe House",
-    characters: ["jace-maddox", "alex-torres"]
+    characters: ["jace-maddox", "alex-torres"],
+    manuscriptSource: "CODENAME: EMBER — Book 1: The Istanbul Protocol",
   },
   {
     id: "scene-ch7-confrontation",
@@ -154,7 +157,8 @@ export const EMBER_SCENES: Scene[] = [
     actionLevel: "extreme",
     emotionalTone: "Desperate, fierce, victorious",
     location: "Istanbul warehouse — all levels, escape route",
-    characters: ["jace-maddox", "alex-torres"]
+    characters: ["jace-maddox", "alex-torres"],
+    manuscriptSource: "CODENAME: EMBER — Book 1: The Istanbul Protocol",
   }
 ]
 

@@ -94,6 +94,21 @@ export async function saveAllCharacters(chars: Character[]): Promise<void> {
   }
 }
 
+export async function deleteCharacter(id: string): Promise<void> {
+  const all = lsGet<Character[]>("ember_characters", EMBER_CHARACTERS)
+  const updated = all.filter((c) => c.id !== id)
+  lsSet("ember_characters", updated)
+
+  if (isSupabaseConfigured && supabase) {
+    try {
+      const { error } = await supabase.from("characters").delete().eq("id", id)
+      if (error) console.warn("Supabase deleteCharacter error:", error.message)
+    } catch (e) {
+      console.warn("Supabase deleteCharacter exception:", e)
+    }
+  }
+}
+
 async function seedCharacters() {
   if (!supabase) return
   try {

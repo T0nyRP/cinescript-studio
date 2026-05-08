@@ -67,6 +67,7 @@ export interface Scene {
   location: string
   characters: string[]
   shotBreakdown?: Shot[]
+  manuscriptSource?: string  // Which manuscript this scene was extracted from
 }
 
 export interface VideoRecord {

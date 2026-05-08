@@ -223,6 +223,7 @@ export default function ManuscriptsPage() {
           location: String(raw.location ?? ""),
           characters: sceneCharIds,
           shotBreakdown: shots,
+          manuscriptSource: manuscript.title,
         };
         await saveScene(scene);
       }
