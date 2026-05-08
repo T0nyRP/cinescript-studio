@@ -1,7 +1,13 @@
 /**
  * Dual-mode data store.
- * - If NEXT_PUBLIC_SUPABASE_URL + NEXT_PUBLIC_SUPABASE_ANON_KEY are set → Supabase
- * - Otherwise → localStorage (browser-local, zero config)
+ *
+ * STORAGE STRATEGY:
+ * - localStorage is ALWAYS written first (instant, never fails silently)
+ * - Supabase is synced in the background when configured
+ * - Reads prefer Supabase when available, fall back to localStorage
+ *
+ * This prevents the silent-data-loss bug where a Supabase upsert error
+ * (e.g. wrong schema, RLS block) would cause new data to disappear.
  */
 
 import { supabase, isSupabaseConfigured } from "@/lib/supabase"
@@ -36,37 +42,65 @@ function lsSet<T>(key: string, value: T) {
 // Characters
 // ─────────────────────────────────────────────
 export async function getCharacters(): Promise<Character[]> {
+  // Try Supabase first if configured
   if (isSupabaseConfigured && supabase) {
-    const { data, error } = await supabase.from("characters").select("*").order("created_at")
-    if (!error && data && data.length > 0) return data.map(rowToCharacter)
-    await seedCharacters()
-    return EMBER_CHARACTERS
+    try {
+      const { data, error } = await supabase.from("characters").select("*").order("created_at")
+      if (!error && data && data.length > 0) {
+        const chars = data.map(rowToCharacter)
+        // Keep localStorage in sync with Supabase
+        lsSet("ember_characters", chars)
+        return chars
+      }
+      if (error) console.warn("Supabase getCharacters error:", error.message)
+    } catch (e) {
+      console.warn("Supabase getCharacters exception:", e)
+    }
   }
+  // Always fall back to localStorage
   return lsGet<Character[]>("ember_characters", EMBER_CHARACTERS)
 }
 
 export async function saveCharacter(char: Character): Promise<void> {
-  if (isSupabaseConfigured && supabase) {
-    await supabase.from("characters").upsert(characterToRow(char))
-    return
-  }
+  // 1. ALWAYS write to localStorage first — this is instant and reliable
   const all = lsGet<Character[]>("ember_characters", EMBER_CHARACTERS)
   const idx = all.findIndex((c) => c.id === char.id)
   const updated = idx >= 0 ? [...all.slice(0, idx), char, ...all.slice(idx + 1)] : [...all, char]
   lsSet("ember_characters", updated)
+
+  // 2. Background-sync to Supabase (non-blocking, errors logged not thrown)
+  if (isSupabaseConfigured && supabase) {
+    try {
+      const { error } = await supabase.from("characters").upsert(characterToRow(char))
+      if (error) console.warn("Supabase saveCharacter error (data saved to localStorage):", error.message)
+    } catch (e) {
+      console.warn("Supabase saveCharacter exception:", e)
+    }
+  }
 }
 
 export async function saveAllCharacters(chars: Character[]): Promise<void> {
-  if (isSupabaseConfigured && supabase) {
-    await supabase.from("characters").upsert(chars.map(characterToRow))
-    return
-  }
+  // 1. Write to localStorage
   lsSet("ember_characters", chars)
+
+  // 2. Sync to Supabase
+  if (isSupabaseConfigured && supabase) {
+    try {
+      const { error } = await supabase.from("characters").upsert(chars.map(characterToRow))
+      if (error) console.warn("Supabase saveAllCharacters error:", error.message)
+    } catch (e) {
+      console.warn("Supabase saveAllCharacters exception:", e)
+    }
+  }
 }
 
 async function seedCharacters() {
   if (!supabase) return
-  await supabase.from("characters").upsert(EMBER_CHARACTERS.map(characterToRow))
+  try {
+    await supabase.from("characters").upsert(EMBER_CHARACTERS.map(characterToRow))
+  } catch (e) {
+    console.warn("Supabase seedCharacters failed:", e)
+  }
 }
 
 function characterToRow(c: Character) {
@@ -108,28 +142,46 @@ function rowToCharacter(row: Record<string, unknown>): Character {
 // ─────────────────────────────────────────────
 export async function getScenes(): Promise<Scene[]> {
   if (isSupabaseConfigured && supabase) {
-    const { data, error } = await supabase.from("scenes").select("*").order("created_at")
-    if (!error && data && data.length > 0) return data.map(rowToScene)
-    await seedScenes()
-    return EMBER_SCENES
+    try {
+      const { data, error } = await supabase.from("scenes").select("*").order("created_at")
+      if (!error && data && data.length > 0) {
+        const scenes = data.map(rowToScene)
+        lsSet("ember_scenes", scenes)
+        return scenes
+      }
+      if (error) console.warn("Supabase getScenes error:", error.message)
+    } catch (e) {
+      console.warn("Supabase getScenes exception:", e)
+    }
   }
   return lsGet<Scene[]>("ember_scenes", EMBER_SCENES)
 }
 
 export async function saveScene(scene: Scene): Promise<void> {
-  if (isSupabaseConfigured && supabase) {
-    await supabase.from("scenes").upsert(sceneToRow(scene))
-    return
-  }
+  // 1. ALWAYS write to localStorage first
   const all = lsGet<Scene[]>("ember_scenes", EMBER_SCENES)
   const idx = all.findIndex((s) => s.id === scene.id)
   const updated = idx >= 0 ? [...all.slice(0, idx), scene, ...all.slice(idx + 1)] : [...all, scene]
   lsSet("ember_scenes", updated)
+
+  // 2. Background-sync to Supabase
+  if (isSupabaseConfigured && supabase) {
+    try {
+      const { error } = await supabase.from("scenes").upsert(sceneToRow(scene))
+      if (error) console.warn("Supabase saveScene error (saved to localStorage):", error.message)
+    } catch (e) {
+      console.warn("Supabase saveScene exception:", e)
+    }
+  }
 }
 
 async function seedScenes() {
   if (!supabase) return
-  await supabase.from("scenes").upsert(EMBER_SCENES.map(sceneToRow))
+  try {
+    await supabase.from("scenes").upsert(EMBER_SCENES.map(sceneToRow))
+  } catch (e) {
+    console.warn("Supabase seedScenes failed:", e)
+  }
 }
 
 function sceneToRow(s: Scene) {
@@ -172,65 +224,57 @@ function rowToScene(row: Record<string, unknown>): Scene {
 // ─────────────────────────────────────────────
 export async function getVideos(): Promise<VideoRecord[]> {
   if (isSupabaseConfigured && supabase) {
-    const { data, error } = await supabase.from("videos").select("*").order("generated_at", { ascending: false })
-    if (!error && data && data.length > 0) return data.map(rowToVideo)
-    await seedVideos()
-    return DEFAULT_VIDEOS
+    try {
+      const { data, error } = await supabase.from("videos").select("*").order("generated_at", { ascending: false })
+      if (!error && data && data.length > 0) {
+        const videos = data.map(rowToVideo)
+        lsSet("ember_videos", videos)
+        return videos
+      }
+      if (error) console.warn("Supabase getVideos error:", error.message)
+    } catch (e) {
+      console.warn("Supabase getVideos exception:", e)
+    }
   }
   return lsGet<VideoRecord[]>("ember_videos", DEFAULT_VIDEOS)
 }
 
 export async function addVideo(video: VideoRecord): Promise<void> {
-  if (isSupabaseConfigured && supabase) {
-    await supabase.from("videos").upsert(videoToRow(video))
-    return
-  }
+  // 1. Write to localStorage
   const all = lsGet<VideoRecord[]>("ember_videos", DEFAULT_VIDEOS)
   lsSet("ember_videos", [video, ...all.filter((v) => v.id !== video.id)])
-}
 
-async function seedVideos() {
-  if (!supabase) return
-  await supabase.from("videos").upsert(DEFAULT_VIDEOS.map(videoToRow))
+  // 2. Sync to Supabase
+  if (isSupabaseConfigured && supabase) {
+    try {
+      const { error } = await supabase.from("videos").upsert(videoToRow(video))
+      if (error) console.warn("Supabase addVideo error:", error.message)
+    } catch (e) {
+      console.warn("Supabase addVideo exception:", e)
+    }
+  }
 }
 
 function videoToRow(v: VideoRecord) {
   return {
-    id: v.id,
-    title: v.title,
-    subtitle: v.subtitle,
-    video_url: v.videoUrl,
-    thumbnail_url: v.thumbnailUrl,
-    duration: v.duration,
-    shots: v.shots,
-    scene: v.scene,
-    style: v.style,
-    characters: v.characters,
-    reference_images: v.referenceImages,
-    generated_at: v.generatedAt,
-    facebook_ready: v.facebookReady,
-    tags: v.tags,
-    has_voice: v.hasVoice ?? false,
+    id: v.id, title: v.title, subtitle: v.subtitle,
+    video_url: v.videoUrl, thumbnail_url: v.thumbnailUrl,
+    duration: v.duration, shots: v.shots, scene: v.scene,
+    style: v.style, characters: v.characters,
+    reference_images: v.referenceImages, generated_at: v.generatedAt,
+    facebook_ready: v.facebookReady, tags: v.tags, has_voice: v.hasVoice ?? false,
   }
 }
 
 function rowToVideo(row: Record<string, unknown>): VideoRecord {
   return {
-    id: row.id as string,
-    title: row.title as string,
-    subtitle: row.subtitle as string,
-    videoUrl: row.video_url as string,
-    thumbnailUrl: row.thumbnail_url as string,
-    duration: row.duration as string,
-    shots: row.shots as number,
-    scene: row.scene as string,
-    style: row.style as string,
-    characters: row.characters as string[],
+    id: row.id as string, title: row.title as string, subtitle: row.subtitle as string,
+    videoUrl: row.video_url as string, thumbnailUrl: row.thumbnail_url as string,
+    duration: row.duration as string, shots: row.shots as number, scene: row.scene as string,
+    style: row.style as string, characters: row.characters as string[],
     referenceImages: row.reference_images as VideoRecord["referenceImages"],
-    generatedAt: row.generated_at as string,
-    facebookReady: row.facebook_ready as boolean,
-    tags: row.tags as string[],
-    hasVoice: row.has_voice as boolean,
+    generatedAt: row.generated_at as string, facebookReady: row.facebook_ready as boolean,
+    tags: row.tags as string[], hasVoice: row.has_voice as boolean,
   }
 }
 
@@ -245,10 +289,8 @@ export async function exportAllData() {
   )
   const url = URL.createObjectURL(blob)
   const a = document.createElement("a")
-  a.href = url
-  a.download = `ember-studio-${new Date().toISOString().split("T")[0]}.json`
-  a.click()
-  URL.revokeObjectURL(url)
+  a.href = url; a.download = `ember-studio-${new Date().toISOString().split("T")[0]}.json`
+  a.click(); URL.revokeObjectURL(url)
 }
 
 export async function importAllData(json: string): Promise<boolean> {
@@ -258,13 +300,11 @@ export async function importAllData(json: string): Promise<boolean> {
     if (data.scenes) for (const s of data.scenes) await saveScene(s)
     if (data.videos) for (const v of data.videos) await addVideo(v)
     return true
-  } catch {
-    return false
-  }
+  } catch { return false }
 }
 
 // ─────────────────────────────────────────────
-// Manuscripts (localStorage only)
+// Manuscripts (localStorage only — content too large for Supabase free tier)
 // ─────────────────────────────────────────────
 import type { Manuscript } from "@/types"
 import { EMBER_MANUSCRIPT } from "@/lib/default-data"
@@ -278,9 +318,7 @@ export function getManuscripts(): Manuscript[] {
 export function saveManuscript(manuscript: Manuscript): void {
   const all = lsGet<Manuscript[]>("ember_manuscripts", [])
   const idx = all.findIndex((m) => m.id === manuscript.id)
-  const updated = idx >= 0
-    ? [...all.slice(0, idx), manuscript, ...all.slice(idx + 1)]
-    : [...all, manuscript]
+  const updated = idx >= 0 ? [...all.slice(0, idx), manuscript, ...all.slice(idx + 1)] : [...all, manuscript]
   lsSet("ember_manuscripts", updated)
 }
 
