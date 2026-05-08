@@ -13,30 +13,10 @@ import { ManuscriptCard } from "@/components/manuscript-card";
 import { getManuscripts, saveManuscript, deleteManuscript } from "@/lib/data-store";
 import type { Manuscript } from "@/types";
 
-// ─── PDF text extraction via pdfjs-dist ───────────────────────────────────
-async function extractPdfText(file: File): Promise<string> {
-  const pdfjsLib = await import("pdfjs-dist");
-  pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.mjs`;
-
-  const arrayBuffer = await file.arrayBuffer();
-  const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
-  const pages: string[] = [];
-
-  for (let i = 1; i <= pdf.numPages; i++) {
-    const page = await pdf.getPage(i);
-    const content = await page.getTextContent();
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const pageText = content.items.map((item: any) => item.str ?? "").join(" ");
-    pages.push(pageText);
-  }
-
-  return pages.join("\n\n");
-}
-
 // ─── Title guesser ────────────────────────────────────────────────────────
 function guessTitle(text: string, filename: string): string {
   const lines = text.split(/\n+/).map((l) => l.trim()).filter(Boolean);
-  for (const line of lines.slice(0, 5)) {
+  for (const line of lines.slice(0, 8)) {
     if (line.length > 3 && line.length < 80) return line;
   }
   return filename.replace(/\.[^.]+$/, "").replace(/[-_]/g, " ");
@@ -71,7 +51,7 @@ function PasteModal({
 
         <input
           type="text"
-          placeholder="Manuscript title (e.g. The Istanbul Protocol)"
+          placeholder="Manuscript title (e.g. The Eastern Front)"
           value={title}
           onChange={(e) => setTitle(e.target.value)}
           className="w-full bg-white/5 border border-white/10 rounded-lg px-4 py-2.5 text-white placeholder-white/30 text-sm focus:outline-none focus:border-orange-500/50"
@@ -116,6 +96,7 @@ export default function ManuscriptsPage() {
   const [isDragging, setIsDragging] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
   const [processingName, setProcessingName] = useState("");
+  const [processingStep, setProcessingStep] = useState("");
   const [toast, setToast] = useState<{ type: "success" | "error"; msg: string } | null>(null);
   const [showPaste, setShowPaste] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -126,7 +107,7 @@ export default function ManuscriptsPage() {
 
   const showToast = (type: "success" | "error", msg: string) => {
     setToast({ type, msg });
-    setTimeout(() => setToast(null), 3500);
+    setTimeout(() => setToast(null), 4000);
   };
 
   const processFile = useCallback(async (file: File) => {
@@ -145,36 +126,53 @@ export default function ManuscriptsPage() {
 
     try {
       let text = "";
+
       if (isPdf) {
-        text = await extractPdfText(file);
+        setProcessingStep("Sending to parser…");
+        const form = new FormData();
+        form.append("file", file);
+
+        const res = await fetch("/api/parse-pdf", { method: "POST", body: form });
+        const json = await res.json();
+
+        if (!res.ok) {
+          showToast("error", json.error ?? "PDF parsing failed. Try a TXT file instead.");
+          return;
+        }
+
+        text = json.text ?? "";
+        setProcessingStep(`Extracted ${json.pages} page${json.pages !== 1 ? "s" : ""}…`);
       } else {
+        setProcessingStep("Reading file…");
         text = await file.text();
       }
 
       if (!text.trim()) {
-        showToast("error", "Could not extract any text from this file.");
+        showToast("error", "No text found. The PDF may be image-based (scanned pages only).");
         return;
       }
 
+      setProcessingStep("Saving…");
       const manuscript: Manuscript = {
         id: `ms-${Date.now()}`,
         title: guessTitle(text, file.name),
         author: "Unknown",
         uploadedAt: new Date().toISOString(),
-        text: text.slice(0, 200_000),
+        text: text.slice(0, 300_000),
         characters: [],
         scenes: [],
       };
 
       saveManuscript(manuscript);
       setManuscripts(getManuscripts());
-      showToast("success", `"${manuscript.title}" added successfully.`);
+      showToast("success", `"${manuscript.title}" added — ${Math.round(text.split(/\s+/).length).toLocaleString()} words loaded.`);
     } catch (err) {
       console.error(err);
-      showToast("error", "Failed to read the file. Please try again.");
+      showToast("error", "Something went wrong reading the file. Please try again.");
     } finally {
       setIsProcessing(false);
       setProcessingName("");
+      setProcessingStep("");
       if (fileInputRef.current) fileInputRef.current.value = "";
     }
   }, []);
@@ -205,7 +203,7 @@ export default function ManuscriptsPage() {
       title,
       author: "Unknown",
       uploadedAt: new Date().toISOString(),
-      text: text.slice(0, 200_000),
+      text: text.slice(0, 300_000),
       characters: [],
       scenes: [],
     };
@@ -267,8 +265,8 @@ export default function ManuscriptsPage() {
         </div>
         <h1 className="text-3xl font-bold text-white mb-2">Manuscript Studio</h1>
         <p className="text-white/50 text-base max-w-xl">
-          Upload a PDF or TXT, or paste your text directly. Each manuscript is saved locally and
-          available in the Generate Brief for AI-assisted video production.
+          Upload a PDF or TXT, or paste your text directly. Manuscripts are saved locally and
+          included in the Generation Brief for AI-assisted video production.
         </p>
       </motion.div>
 
@@ -323,8 +321,8 @@ export default function ManuscriptsPage() {
           {isProcessing ? (
             <div className="flex flex-col items-center gap-4">
               <div className="w-12 h-12 rounded-full border-2 border-orange-500 border-t-transparent animate-spin" />
-              <p className="text-white font-medium">Reading {processingName}…</p>
-              <p className="text-white/40 text-sm">Extracting text content</p>
+              <p className="text-white font-medium">Processing {processingName}</p>
+              <p className="text-white/40 text-sm">{processingStep || "Please wait…"}</p>
             </div>
           ) : (
             <>
