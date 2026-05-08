@@ -1,6 +1,6 @@
 /**
  * Dual-mode data store.
- * - If NEXT_PUBLIC_SUPABASE_URL + NEXT_PUBLIC_SUPABASE_ANON_KEY are set → Supabase (syncs across devices)
+ * - If NEXT_PUBLIC_SUPABASE_URL + NEXT_PUBLIC_SUPABASE_ANON_KEY are set → Supabase
  * - Otherwise → localStorage (browser-local, zero config)
  */
 
@@ -20,9 +20,16 @@ function lsGet<T>(key: string, fallback: T): T {
     return fallback
   }
 }
+
 function lsSet<T>(key: string, value: T) {
   if (typeof window === "undefined") return
-  localStorage.setItem(key, JSON.stringify(value))
+  try {
+    localStorage.setItem(key, JSON.stringify(value))
+    // Notify all hooks in this tab that the store changed
+    window.dispatchEvent(new CustomEvent("ember-store-updated", { detail: { key } }))
+  } catch (e) {
+    console.error("localStorage write failed:", e)
+  }
 }
 
 // ─────────────────────────────────────────────
@@ -31,10 +38,7 @@ function lsSet<T>(key: string, value: T) {
 export async function getCharacters(): Promise<Character[]> {
   if (isSupabaseConfigured && supabase) {
     const { data, error } = await supabase.from("characters").select("*").order("created_at")
-    if (!error && data && data.length > 0) {
-      return data.map(rowToCharacter)
-    }
-    // First run: seed from defaults
+    if (!error && data && data.length > 0) return data.map(rowToCharacter)
     await seedCharacters()
     return EMBER_CHARACTERS
   }
@@ -105,9 +109,7 @@ function rowToCharacter(row: Record<string, unknown>): Character {
 export async function getScenes(): Promise<Scene[]> {
   if (isSupabaseConfigured && supabase) {
     const { data, error } = await supabase.from("scenes").select("*").order("created_at")
-    if (!error && data && data.length > 0) {
-      return data.map(rowToScene)
-    }
+    if (!error && data && data.length > 0) return data.map(rowToScene)
     await seedScenes()
     return EMBER_SCENES
   }
@@ -171,9 +173,7 @@ function rowToScene(row: Record<string, unknown>): Scene {
 export async function getVideos(): Promise<VideoRecord[]> {
   if (isSupabaseConfigured && supabase) {
     const { data, error } = await supabase.from("videos").select("*").order("generated_at", { ascending: false })
-    if (!error && data && data.length > 0) {
-      return data.map(rowToVideo)
-    }
+    if (!error && data && data.length > 0) return data.map(rowToVideo)
     await seedVideos()
     return DEFAULT_VIDEOS
   }
@@ -264,14 +264,13 @@ export async function importAllData(json: string): Promise<boolean> {
 }
 
 // ─────────────────────────────────────────────
-// Manuscripts (localStorage only — content is too large for Supabase free tier)
+// Manuscripts (localStorage only)
 // ─────────────────────────────────────────────
 import type { Manuscript } from "@/types"
 import { EMBER_MANUSCRIPT } from "@/lib/default-data"
 
 export function getManuscripts(): Manuscript[] {
   const saved = lsGet<Manuscript[]>("ember_manuscripts", [])
-  // Always include the built-in EMBER manuscript at the top
   const hasEmber = saved.some((m) => m.id === EMBER_MANUSCRIPT.id)
   return hasEmber ? saved : [EMBER_MANUSCRIPT, ...saved]
 }
@@ -286,7 +285,7 @@ export function saveManuscript(manuscript: Manuscript): void {
 }
 
 export function deleteManuscript(id: string): void {
-  if (id === EMBER_MANUSCRIPT.id) return // can't delete the built-in one
+  if (id === EMBER_MANUSCRIPT.id) return
   const all = lsGet<Manuscript[]>("ember_manuscripts", [])
   lsSet("ember_manuscripts", all.filter((m) => m.id !== id))
 }
