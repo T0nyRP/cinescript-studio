@@ -105,7 +105,7 @@ export async function POST(request: NextRequest) {
 
     // Use claude-3-5-haiku for speed — avoids Vercel serverless timeout on free tier
     const response = await client.messages.create({
-      model: "claude-3-5-haiku-20241022",
+      model: "claude-haiku-4-5",
       max_tokens: 4096,
       system: SYSTEM,
       messages: [{ role: "user", content: buildPrompt(title, text) }],
