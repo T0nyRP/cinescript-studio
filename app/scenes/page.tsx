@@ -5,10 +5,10 @@ import { motion, AnimatePresence } from "framer-motion";
 import { Film, Zap, MapPin, Users, ChevronRight, Loader2, Inbox, BookOpen, ChevronDown, ChevronUp } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { useScenes } from "@/hooks/use-data-store";
+import { useScenes, useCharacters } from "@/hooks/use-data-store";
 import { cn } from "@/lib/utils";
 import Link from "next/link";
-import type { Scene } from "@/types";
+import type { Scene, Character } from "@/types";
 
 const actionLevelConfig = {
   low: { label: "Low Action", color: "text-green-400", bg: "bg-green-500/15", border: "border-green-500/20", dot: "bg-green-400" },
@@ -19,7 +19,7 @@ const actionLevelConfig = {
 
 const EMBER_SOURCE = "CODENAME: EMBER — Book 1: The Istanbul Protocol";
 
-function SceneDetail({ scene }: { scene: Scene }) {
+function SceneDetail({ scene, charMap }: { scene: Scene; charMap: Map<string, string> }) {
   const levelCfg = actionLevelConfig[scene.actionLevel] ?? actionLevelConfig.medium;
   return (
     <motion.div
@@ -71,9 +71,7 @@ function SceneDetail({ scene }: { scene: Scene }) {
           <div className="flex flex-wrap gap-2">
             {scene.characters.map((charId) => (
               <span key={charId} className="text-xs bg-blue-500/10 border border-blue-500/20 px-2 py-0.5 rounded-full text-blue-300">
-                {charId.startsWith("char-")
-                  ? charId
-                  : charId.split("-").map((w) => w[0]?.toUpperCase() + w.slice(1)).join(" ")}
+                {charMap.get(charId) ?? charId}
               </span>
             ))}
           </div>
@@ -214,6 +212,8 @@ function ManuscriptGroup({
 
 export default function ScenesPage() {
   const { scenes, loading } = useScenes();
+  const { characters } = useCharacters();
+  const charMap = new Map<string, string>(characters.map((c) => [c.id, c.name]));
   const [selectedSceneId, setSelectedSceneId] = useState<string>("");
 
   // Once scenes finish loading, auto-select the first one
@@ -345,7 +345,7 @@ export default function ScenesPage() {
           </div>
 
           {/* Scene detail */}
-          {selected && <SceneDetail scene={selected} />}
+          {selected && <SceneDetail scene={selected} charMap={charMap} />}
         </div>
       )}
     </div>
