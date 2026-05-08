@@ -262,3 +262,31 @@ export async function importAllData(json: string): Promise<boolean> {
     return false
   }
 }
+
+// ─────────────────────────────────────────────
+// Manuscripts (localStorage only — content is too large for Supabase free tier)
+// ─────────────────────────────────────────────
+import type { Manuscript } from "@/types"
+import { EMBER_MANUSCRIPT } from "@/lib/default-data"
+
+export function getManuscripts(): Manuscript[] {
+  const saved = lsGet<Manuscript[]>("ember_manuscripts", [])
+  // Always include the built-in EMBER manuscript at the top
+  const hasEmber = saved.some((m) => m.id === EMBER_MANUSCRIPT.id)
+  return hasEmber ? saved : [EMBER_MANUSCRIPT, ...saved]
+}
+
+export function saveManuscript(manuscript: Manuscript): void {
+  const all = lsGet<Manuscript[]>("ember_manuscripts", [])
+  const idx = all.findIndex((m) => m.id === manuscript.id)
+  const updated = idx >= 0
+    ? [...all.slice(0, idx), manuscript, ...all.slice(idx + 1)]
+    : [...all, manuscript]
+  lsSet("ember_manuscripts", updated)
+}
+
+export function deleteManuscript(id: string): void {
+  if (id === EMBER_MANUSCRIPT.id) return // can't delete the built-in one
+  const all = lsGet<Manuscript[]>("ember_manuscripts", [])
+  lsSet("ember_manuscripts", all.filter((m) => m.id !== id))
+}
