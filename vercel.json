@@ -1,5 +1,13 @@
 {
   "framework": "nextjs",
   "buildCommand": "NODE_ENV=production npm run build",
-  "outputDirectory": ".next"
+  "outputDirectory": ".next",
+  "functions": {
+    "app/api/analyze-manuscript/route.ts": {
+      "maxDuration": 60
+    },
+    "app/api/parse-pdf/route.ts": {
+      "maxDuration": 30
+    }
+  }
 }

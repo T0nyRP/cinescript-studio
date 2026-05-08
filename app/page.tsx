@@ -4,7 +4,8 @@ import { useState, useRef, useEffect, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Upload, FileText, BookOpen, Zap, Users, Film, ChevronRight,
-  Star, X, Trash2, Plus, AlertCircle, CheckCircle, Sparkles, Loader2
+  Star, X, Trash2, Plus, AlertCircle, CheckCircle, Sparkles, Loader2,
+  RefreshCw
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -12,7 +13,7 @@ import Link from "next/link";
 import { ManuscriptCard } from "@/components/manuscript-card";
 import {
   getManuscripts, saveManuscript, deleteManuscript,
-  saveCharacter, saveScene, getCharacters, getScenes
+  saveCharacter, saveScene, saveAllCharacters
 } from "@/lib/data-store";
 import type { Manuscript, Character, Scene, Shot } from "@/types";
 
@@ -107,7 +108,7 @@ export default function ManuscriptsPage() {
 
   const showToast = (type: "success" | "error", msg: string) => {
     setToast({ type, msg });
-    setTimeout(() => setToast(null), 5000);
+    setTimeout(() => setToast(null), 8000);
   };
 
   // ── Analyze a manuscript with AI ─────────────────────────────────────
@@ -122,43 +123,71 @@ export default function ManuscriptsPage() {
         body: JSON.stringify({ title: manuscript.title, text: manuscript.text }),
       });
 
-      const data = await res.json();
-
-      if (!res.ok) {
-        showToast("error", data.error ?? "AI analysis failed.");
+      // Always try to parse JSON, fall back to text for error diagnosis
+      let data: Record<string, unknown> = {};
+      try {
+        data = await res.json();
+      } catch {
+        const text = await res.text().catch(() => "");
+        showToast("error", `Analysis failed (HTTP ${res.status}): ${text.slice(0, 200) || "No response body"}`);
         return;
       }
 
-      setProcessingStep(`Saving ${data.charactersFound} characters and ${data.scenesFound} scenes…`);
+      if (!res.ok) {
+        showToast("error", String(data.error ?? `Analysis failed (HTTP ${res.status})`));
+        return;
+      }
 
-      // ── Map AI characters → Character objects and save ─────────────
-      const extractedChars: Character[] = [];
-      for (const raw of data.characters as Array<Record<string, unknown>>) {
-        const char: Character = {
-          id: makeId("char"),
-          name: String(raw.name ?? "Unknown"),
-          age: String(raw.age ?? "Unknown"),
-          role: String(raw.role ?? ""),
-          appearance: {
-            hair: String((raw.appearance as Record<string, unknown>)?.hair ?? ""),
-            eyes: String((raw.appearance as Record<string, unknown>)?.eyes ?? ""),
-            height: String((raw.appearance as Record<string, unknown>)?.height ?? ""),
-            build: String((raw.appearance as Record<string, unknown>)?.build ?? ""),
-            distinguishing: String((raw.appearance as Record<string, unknown>)?.distinguishing ?? ""),
-            clothing: String((raw.appearance as Record<string, unknown>)?.clothing ?? ""),
-          },
-          personality: Array.isArray(raw.personality) ? raw.personality.map(String) : [],
-          voiceStyle: String(raw.voiceStyle ?? ""),
-          manuscriptSource: manuscript.title,
-          createdAt: new Date().toISOString(),
-        };
-        extractedChars.push(char);
+      const rawChars = (data.characters as Array<Record<string, unknown>>) ?? [];
+      const rawScenes = (data.scenes as Array<Record<string, unknown>>) ?? [];
+
+      setProcessingStep(`Saving ${rawChars.length} characters and ${rawScenes.length} scenes…`);
+
+      // ── Step 1: Build Character objects with unique IDs ───────────────
+      const extractedChars: Character[] = rawChars.map((raw) => ({
+        id: makeId("char"),
+        name: String(raw.name ?? "Unknown"),
+        age: String(raw.age ?? "Unknown"),
+        role: String(raw.role ?? ""),
+        appearance: {
+          hair: String((raw.appearance as Record<string, unknown>)?.hair ?? ""),
+          eyes: String((raw.appearance as Record<string, unknown>)?.eyes ?? ""),
+          height: String((raw.appearance as Record<string, unknown>)?.height ?? ""),
+          build: String((raw.appearance as Record<string, unknown>)?.build ?? ""),
+          distinguishing: String((raw.appearance as Record<string, unknown>)?.distinguishing ?? ""),
+          clothing: String((raw.appearance as Record<string, unknown>)?.clothing ?? ""),
+        },
+        personality: Array.isArray(raw.personality) ? raw.personality.map(String) : [],
+        voiceStyle: String(raw.voiceStyle ?? ""),
+        manuscriptSource: manuscript.title,
+        createdAt: new Date().toISOString(),
+      }));
+
+      // Build name → ID map so scenes can reference characters by ID
+      // Match both exact names and lowercase variants
+      const nameToId = new Map<string, string>();
+      for (const char of extractedChars) {
+        nameToId.set(char.name, char.id);
+        nameToId.set(char.name.toLowerCase(), char.id);
+        // Also index by first name only (e.g. "Zara" → id of "Zara Malik")
+        const firstName = char.name.split(" ")[0];
+        if (firstName && !nameToId.has(firstName)) {
+          nameToId.set(firstName, char.id);
+          nameToId.set(firstName.toLowerCase(), char.id);
+        }
+      }
+
+      // Save all characters at once
+      for (const char of extractedChars) {
         await saveCharacter(char);
       }
 
-      // ── Map AI scenes → Scene objects and save ──────────────────────
-      for (const raw of data.scenes as Array<Record<string, unknown>>) {
-        const rawShots = Array.isArray(raw.shotBreakdown) ? raw.shotBreakdown as Array<Record<string, unknown>> : [];
+      // ── Step 2: Build Scene objects, mapping character names → IDs ────
+      for (const raw of rawScenes) {
+        const rawShots = Array.isArray(raw.shotBreakdown)
+          ? (raw.shotBreakdown as Array<Record<string, unknown>>)
+          : [];
+
         const shots: Shot[] = rawShots.map((s, i) => ({
           id: makeId("shot"),
           order: Number(s.order ?? i + 1),
@@ -168,9 +197,18 @@ export default function ManuscriptsPage() {
           action: String(s.action ?? ""),
           lighting: String(s.lighting ?? ""),
           duration: Number(s.duration ?? 8),
-          characters: Array.isArray(s.characters) ? s.characters.map(String) : [],
+          // Map shot-level character names to IDs too
+          characters: Array.isArray(s.characters)
+            ? s.characters.map((n) => nameToId.get(String(n)) ?? nameToId.get(String(n).toLowerCase()) ?? String(n))
+            : [],
           prompt: String(s.prompt ?? ""),
         }));
+
+        // Map scene character names → IDs
+        const sceneCharIds = Array.isArray(raw.characters)
+          ? raw.characters
+              .map((n) => nameToId.get(String(n)) ?? nameToId.get(String(n).toLowerCase()) ?? String(n))
+          : [];
 
         const scene: Scene = {
           id: makeId("scene"),
@@ -183,13 +221,13 @@ export default function ManuscriptsPage() {
           actionLevel: (raw.actionLevel as Scene["actionLevel"]) ?? "medium",
           emotionalTone: String(raw.emotionalTone ?? ""),
           location: String(raw.location ?? ""),
-          characters: Array.isArray(raw.characters) ? raw.characters.map(String) : [],
+          characters: sceneCharIds,
           shotBreakdown: shots,
         };
         await saveScene(scene);
       }
 
-      // ── Update the manuscript record with new counts ────────────────
+      // ── Step 3: Update manuscript record with extracted data ──────────
       const updatedMs: Manuscript = {
         ...manuscript,
         characters: extractedChars,
@@ -198,12 +236,14 @@ export default function ManuscriptsPage() {
       saveManuscript(updatedMs);
       reload();
 
-      showToast("success",
-        `✓ Found ${data.charactersFound} characters and ${data.scenesFound} action scenes — ready to generate!`
+      showToast(
+        "success",
+        `✓ Extracted ${rawChars.length} characters and ${rawScenes.length} action scenes — go to Scenes to pick one!`
       );
     } catch (err) {
-      console.error(err);
-      showToast("error", "Analysis failed. Check that ANTHROPIC_API_KEY is set in your environment.");
+      console.error("analyzeManuscript error:", err);
+      const msg = err instanceof Error ? err.message : String(err);
+      showToast("error", `Analysis error: ${msg}`);
     } finally {
       setAnalyzingId(null);
       setProcessingStep("");
@@ -301,12 +341,12 @@ export default function ManuscriptsPage() {
         {toast && (
           <motion.div
             initial={{ opacity: 0, y: -20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -20 }}
-            className={`fixed top-5 right-5 z-50 flex items-center gap-2.5 px-4 py-3 rounded-xl border text-sm font-medium shadow-xl max-w-sm ${
+            className={`fixed top-5 right-5 z-50 flex items-start gap-2.5 px-4 py-3 rounded-xl border text-sm font-medium shadow-xl max-w-sm ${
               toast.type === "success" ? "bg-green-500/15 border-green-500/30 text-green-300" : "bg-red-500/15 border-red-500/30 text-red-300"
             }`}
           >
-            {toast.type === "success" ? <CheckCircle className="w-4 h-4 flex-shrink-0" /> : <AlertCircle className="w-4 h-4 flex-shrink-0" />}
-            {toast.msg}
+            {toast.type === "success" ? <CheckCircle className="w-4 h-4 flex-shrink-0 mt-0.5" /> : <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5" />}
+            <span>{toast.msg}</span>
           </motion.div>
         )}
       </AnimatePresence>
@@ -391,9 +431,18 @@ export default function ManuscriptsPage() {
       <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.3 }}>
         <div className="flex items-center justify-between mb-4">
           <h2 className="text-lg font-semibold text-white">Loaded Manuscripts</h2>
-          <Badge className="bg-green-500/15 text-green-400 border border-green-500/20 text-xs">
-            <Star className="w-3 h-3 mr-1 fill-green-400" />{manuscripts.length} loaded
-          </Badge>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={reload}
+              className="w-7 h-7 rounded-lg bg-white/5 hover:bg-white/10 flex items-center justify-center transition-colors"
+              title="Refresh list"
+            >
+              <RefreshCw className="w-3.5 h-3.5 text-white/40" />
+            </button>
+            <Badge className="bg-green-500/15 text-green-400 border border-green-500/20 text-xs">
+              <Star className="w-3 h-3 mr-1 fill-green-400" />{manuscripts.length} loaded
+            </Badge>
+          </div>
         </div>
         <div className="flex flex-col gap-3">
           {manuscripts.map((ms) => (
