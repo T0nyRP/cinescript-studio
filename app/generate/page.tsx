@@ -1,8 +1,9 @@
 "use client"
 
-import { useState, useMemo } from "react"
+import { useState, useMemo, useEffect, Suspense } from "react"
+import { useSearchParams } from "next/navigation"
 import { motion } from "framer-motion"
-import { Zap, Clapperboard, Mic, FileText, Copy, Check, ChevronDown, ChevronUp, Volume2, MessageSquare, User, AlertCircle, Film, Music } from "lucide-react"
+import { Zap, Copy, Check, ChevronDown, ChevronUp, Volume2, MessageSquare, AlertCircle, Film, Loader2 } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
@@ -97,15 +98,29 @@ function ShotCard({ shot, sceneCharacters, onUpdateDialogue }: { shot: Shot; sce
   )
 }
 
-export default function GeneratePage() {
+// Inner component that uses useSearchParams (must be inside Suspense)
+function GeneratePageInner() {
+  const searchParams = useSearchParams()
   const { characters } = useCharacters()
-  const { scenes, updateScene } = useScenes()
-  const [selectedSceneId, setSelectedSceneId] = useState(scenes[0]?.id ?? "")
+  const { scenes, loading, updateScene } = useScenes()
+  const [selectedSceneId, setSelectedSceneId] = useState<string>("")
   const [selectedStyle, setSelectedStyle] = useState("cinematic")
   const [copied, setCopied] = useState(false)
 
+  // Once scenes load, set selected scene from URL param or default to first scene
+  useEffect(() => {
+    if (!loading && scenes.length > 0) {
+      const paramScene = searchParams.get("scene")
+      if (paramScene && scenes.find((s) => s.id === paramScene)) {
+        setSelectedSceneId(paramScene)
+      } else if (!selectedSceneId) {
+        setSelectedSceneId(scenes[0].id)
+      }
+    }
+  }, [loading, scenes, searchParams, selectedSceneId])
+
   const scene = scenes.find((s) => s.id === selectedSceneId) ?? scenes[0]
-  const sceneCharacters = characters.filter((c) => scene?.characters.includes(c.id))
+  const sceneCharacters = characters.filter((c) => scene?.characters?.includes(c.id))
   const unassignedVoices = sceneCharacters.filter((c) => !c.voice?.id)
 
   const updateShotDialogue = (shotId: string, dialogue: ShotDialogue[]) => {
@@ -141,10 +156,10 @@ Format: 16:9 Facebook, 720p
 Duration: ~${((scene.shotBreakdown?.length ?? 8) * 10)}s (${scene.shotBreakdown?.length ?? 8} shots × 10s)
 
 CHARACTERS & VOICES
-${charLines}
+${charLines || "No characters assigned to this scene"}
 
 SHOT BREAKDOWN & DIALOGUE
-${shotLines}
+${shotLines || "No shots defined"}
 
 INSTRUCTIONS
 - Use gpt-image-2-edit with character reference images for all character shots
@@ -164,7 +179,31 @@ INSTRUCTIONS
     setTimeout(() => setCopied(false), 2000)
   }
 
-  if (!scene) return <div className="p-8 text-white/50">No scenes found.</div>
+  // Loading state
+  if (loading) {
+    return (
+      <div className="min-h-screen p-8 flex items-center justify-center">
+        <div className="flex flex-col items-center gap-3 text-white/40">
+          <Loader2 className="w-8 h-8 animate-spin" />
+          <p className="text-sm">Loading scenes…</p>
+        </div>
+      </div>
+    )
+  }
+
+  // No scenes
+  if (!loading && scenes.length === 0) {
+    return (
+      <div className="min-h-screen p-8 flex items-center justify-center">
+        <div className="text-center">
+          <p className="text-white/50 text-sm mb-3">No scenes found. Upload and analyze a manuscript first.</p>
+          <a href="/" className="text-orange-400 text-sm underline">Go to Manuscripts →</a>
+        </div>
+      </div>
+    )
+  }
+
+  if (!scene) return null
 
   return (
     <div className="min-h-screen p-8">
@@ -226,28 +265,32 @@ INSTRUCTIONS
           {/* Characters */}
           <div>
             <h3 className="text-xs font-semibold text-white/50 uppercase tracking-wider mb-3">Characters in This Scene</h3>
-            <div className="space-y-2">
-              {sceneCharacters.map((c) => (
-                <div key={c.id} className="flex items-center gap-3 p-3 bg-white/3 border border-white/8 rounded-xl">
-                  {c.imageUrl && <img src={c.imageUrl} alt={c.name} className="w-9 h-9 rounded-lg object-cover object-top flex-shrink-0" />}
-                  <div className="flex-1 min-w-0">
-                    <p className="text-xs font-semibold text-white">{c.name}</p>
-                    <p className="text-xs text-white/40 truncate">{c.role.split(" / ")[0]}</p>
+            {sceneCharacters.length === 0 ? (
+              <p className="text-xs text-white/30 italic">No characters matched for this scene.</p>
+            ) : (
+              <div className="space-y-2">
+                {sceneCharacters.map((c) => (
+                  <div key={c.id} className="flex items-center gap-3 p-3 bg-white/3 border border-white/8 rounded-xl">
+                    {c.imageUrl && <img src={c.imageUrl} alt={c.name} className="w-9 h-9 rounded-lg object-cover object-top flex-shrink-0" />}
+                    <div className="flex-1 min-w-0">
+                      <p className="text-xs font-semibold text-white">{c.name}</p>
+                      <p className="text-xs text-white/40 truncate">{c.role.split(" / ")[0]}</p>
+                    </div>
+                    <div className="flex-shrink-0">
+                      {c.voice?.id ? (
+                        <span className="flex items-center gap-1 text-xs text-green-400 bg-green-500/10 px-2 py-0.5 rounded-full">
+                          <Volume2 className="w-2.5 h-2.5" />{c.voice.name ?? "Voice set"}
+                        </span>
+                      ) : (
+                        <span className="flex items-center gap-1 text-xs text-orange-400/70 bg-orange-500/8 px-2 py-0.5 rounded-full">
+                          <AlertCircle className="w-2.5 h-2.5" />No voice
+                        </span>
+                      )}
+                    </div>
                   </div>
-                  <div className="flex-shrink-0">
-                    {c.voice?.id ? (
-                      <span className="flex items-center gap-1 text-xs text-green-400 bg-green-500/10 px-2 py-0.5 rounded-full">
-                        <Volume2 className="w-2.5 h-2.5" />{c.voice.name ?? "Voice set"}
-                      </span>
-                    ) : (
-                      <span className="flex items-center gap-1 text-xs text-orange-400/70 bg-orange-500/8 px-2 py-0.5 rounded-full">
-                        <AlertCircle className="w-2.5 h-2.5" />No voice
-                      </span>
-                    )}
-                  </div>
-                </div>
-              ))}
-            </div>
+                ))}
+              </div>
+            )}
             {unassignedVoices.length > 0 && (
               <p className="mt-2 text-xs text-orange-400/70 flex items-center gap-1.5">
                 <AlertCircle className="w-3 h-3" />
@@ -263,7 +306,7 @@ INSTRUCTIONS
             <p className="text-xs text-white/50">Click a shot to expand it and add dialogue lines per character. Lines are saved automatically.</p>
           </div>
           {(scene.shotBreakdown ?? []).map((shot) => (
-            <ShotCard key={shot.id} shot={shot} sceneCharacters={scene.characters} onUpdateDialogue={(d) => updateShotDialogue(shot.id, d)} />
+            <ShotCard key={shot.id} shot={shot} sceneCharacters={scene.characters ?? []} onUpdateDialogue={(d) => updateShotDialogue(shot.id, d)} />
           ))}
           {(!scene.shotBreakdown || scene.shotBreakdown.length === 0) && (
             <div className="p-8 text-center text-white/30 text-sm">No shots defined for this scene.</div>
@@ -302,5 +345,21 @@ INSTRUCTIONS
         </TabsContent>
       </Tabs>
     </div>
+  )
+}
+
+// Wrap in Suspense because useSearchParams requires it in Next.js App Router
+export default function GeneratePage() {
+  return (
+    <Suspense fallback={
+      <div className="min-h-screen p-8 flex items-center justify-center">
+        <div className="flex flex-col items-center gap-3 text-white/40">
+          <Loader2 className="w-8 h-8 animate-spin" />
+          <p className="text-sm">Loading…</p>
+        </div>
+      </div>
+    }>
+      <GeneratePageInner />
+    </Suspense>
   )
 }
