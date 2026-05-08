@@ -20,13 +20,13 @@ TITLE: ${title}
 TEXT:
 ${excerpt}
 
-Return this JSON structure — keep descriptions SHORT (under 80 chars each) to avoid truncation:
+Return this JSON structure — keep ALL string values SHORT (under 100 chars) to avoid truncation:
 {
   "characters": [
     {
       "name": "Full name",
       "age": "Age",
-      "role": "Role (e.g. Protagonist)",
+      "role": "Role",
       "appearance": {
         "hair": "Short desc",
         "eyes": "Short desc",
@@ -44,7 +44,7 @@ Return this JSON structure — keep descriptions SHORT (under 80 chars each) to 
       "title": "Scene title",
       "chapter": "Chapter X",
       "location": "Location",
-      "summary": "One or two sentence summary.",
+      "summary": "One sentence summary.",
       "actionLevel": "high",
       "emotionalTone": "Tense",
       "characters": ["Exact character name"],
@@ -53,24 +53,24 @@ Return this JSON structure — keep descriptions SHORT (under 80 chars each) to 
           "order": 1,
           "type": "wide",
           "angle": "eye-level",
-          "description": "Short shot description",
+          "description": "Short shot desc",
           "action": "What happens",
           "lighting": "Lighting type",
           "duration": 8,
           "characters": ["Character name"],
-          "prompt": "Cinematic image prompt, under 120 chars"
+          "prompt": "Cinematic image prompt under 100 chars"
         }
       ]
     }
   ]
 }
 
-STRICT RULES — follow exactly or the response is unusable:
+STRICT RULES:
 - Extract 3–5 main characters only
-- Extract 3–4 best action/dramatic scenes only
-- Each scene: exactly 4 shots (no more)
-- All string values: under 120 characters
-- summary: 1–2 sentences max
+- Extract 3–4 best action/dramatic scenes only  
+- Each scene: exactly 4 shots
+- All string values: under 100 characters
+- summary: 1 sentence max
 - actionLevel: one of "low" "medium" "high" "extreme"
 - shot type: one of "wide" "medium" "close-up" "aerial" "tracking"
 - shot angle: one of "eye-level" "low-angle" "high-angle" "bird-eye"
@@ -106,7 +106,7 @@ export async function POST(request: NextRequest) {
 
     const response = await client.messages.create({
       model: "claude-haiku-4-5",
-      max_tokens: 8192,        // raised from 4096 — prevents JSON truncation
+      max_tokens: 8192,
       system: SYSTEM,
       messages: [{ role: "user", content: buildPrompt(title, text) }],
     });
@@ -119,26 +119,22 @@ export async function POST(request: NextRequest) {
       .replace(/\s*```$/i, "")
       .trim();
 
-    // Attempt repair: if JSON is truncated, close any open structures
+    // Try direct parse first
     let data: { characters: unknown[]; scenes: unknown[] };
     try {
       data = JSON.parse(jsonStr) as { characters: unknown[]; scenes: unknown[] };
     } catch {
-      // Try to repair truncated JSON by closing open arrays/objects
+      // Attempt repair for truncated responses
       const repaired = repairJson(jsonStr);
       try {
         data = JSON.parse(repaired) as { characters: unknown[]; scenes: unknown[] };
+        console.warn(`JSON was repaired (stop_reason: ${response.stop_reason}, original length: ${jsonStr.length})`);
       } catch (finalErr) {
-        console.error("JSON parse failed. First 500 chars of response:", raw.slice(0, 500));
-        console.error("Last 200 chars:", raw.slice(-200));
+        console.error("JSON parse failed after repair. Stop reason:", response.stop_reason);
+        console.error("Response tail (last 300):", raw.slice(-300));
         return NextResponse.json(
           {
-            error: `AI returned incomplete JSON (response was cut off). This usually means the manuscript produced too much output. Try uploading just the first 3 chapters.`,
-            debug: {
-              responseLength: raw.length,
-              stopReason: response.stop_reason,
-              parseError: finalErr instanceof Error ? finalErr.message : String(finalErr),
-            }
+            error: `AI returned incomplete JSON. stop_reason=${response.stop_reason}. Try uploading just the first 3 chapters of your manuscript.`,
           },
           { status: 500 }
         );
@@ -164,7 +160,7 @@ export async function POST(request: NextRequest) {
 
     if (msg.includes("timed out") || msg.includes("timeout") || msg.includes("FUNCTION_INVOCATION_TIMEOUT")) {
       return NextResponse.json(
-        { error: "Analysis timed out. Try uploading just the first 3 chapters of your manuscript." },
+        { error: "Analysis timed out. Try uploading just the first 3 chapters." },
         { status: 504 }
       );
     }
@@ -175,29 +171,48 @@ export async function POST(request: NextRequest) {
 
 /**
  * Best-effort JSON repair for truncated responses.
- * Counts open braces/brackets and closes them in reverse order.
+ * Handles both mid-string and mid-object truncation.
  */
 function repairJson(s: string): string {
-  const stack: string[] = [];
   let inString = false;
   let escape = false;
+  let lastCompletePos = 0;
 
-  for (const ch of s) {
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
     if (escape) { escape = false; continue; }
     if (ch === "\\" && inString) { escape = true; continue; }
-    if (ch === '"') { inString = !inString; continue; }
+    if (ch === '"') {
+      if (!inString) { inString = true; }
+      else { inString = false; lastCompletePos = i + 1; }
+      continue;
+    }
     if (inString) continue;
+    if (ch === "{" || ch === "[") { /* push handled below */ }
+    if (ch === "}" || ch === "]") lastCompletePos = i + 1;
+  }
+
+  // Truncate to last safe position (after a closed string or structure)
+  let result = s.slice(0, lastCompletePos).trimEnd();
+
+  // Remove dangling key-value prefix: ,"key": or ,"key" (value missing)
+  result = result.replace(/,\s*"[^"]+"\s*:\s*$/, "");
+  result = result.replace(/,\s*"[^"]+"\s*$/, "");
+  result = result.replace(/,\s*$/, "");
+
+  // Recount open structures in the truncated result
+  const stack: string[] = [];
+  let inS = false;
+  let esc = false;
+  for (const ch of result) {
+    if (esc) { esc = false; continue; }
+    if (ch === "\\" && inS) { esc = true; continue; }
+    if (ch === '"') { inS = !inS; continue; }
+    if (inS) continue;
     if (ch === "{" || ch === "[") stack.push(ch === "{" ? "}" : "]");
     if (ch === "}" || ch === "]") stack.pop();
   }
-
-  // Trim to last complete value — remove trailing comma if any
-  let result = s.trimEnd().replace(/,\s*$/, "");
-
-  // Close all open structures
-  while (stack.length > 0) {
-    result += stack.pop();
-  }
+  while (stack.length > 0) result += stack.pop();
 
   return result;
 }
