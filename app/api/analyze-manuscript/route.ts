@@ -4,90 +4,91 @@ import Anthropic from "@anthropic-ai/sdk";
 export const runtime = "nodejs";
 export const maxDuration = 60;
 
-// Reduced to 25K chars — enough for 3–6 good scenes without hitting timeouts
-const MAX_TEXT = 25_000;
+// 20K chars ≈ first 3–4 chapters — enough for solid extraction
+const MAX_TEXT = 20_000;
 
-const SYSTEM = `You are a cinematic script analyst helping a video producer extract characters and action scenes from a manuscript for short-form cinematic video production.
+const SYSTEM = `You are a cinematic script analyst. Extract characters and action scenes from manuscripts for short-form video production.
 
-Return ONLY valid JSON — no markdown, no explanation, no code fences. The JSON must be parseable by JSON.parse() with no modifications.`;
+CRITICAL: Return ONLY a valid, COMPLETE JSON object. No markdown. No explanation. No code fences. The JSON MUST be fully closed and parseable by JSON.parse(). Never truncate mid-string or mid-array.`;
 
 function buildPrompt(title: string, text: string) {
   const excerpt = text.slice(0, MAX_TEXT);
-  return `Analyze this manuscript excerpt and extract characters and action scenes for cinematic video production.
+  return `Analyze this manuscript and extract characters and scenes.
 
-MANUSCRIPT TITLE: ${title}
+TITLE: ${title}
 
 TEXT:
 ${excerpt}
 
-Return a JSON object with this EXACT structure (no extra fields, no comments):
+Return this JSON structure — keep descriptions SHORT (under 80 chars each) to avoid truncation:
 {
   "characters": [
     {
-      "name": "Full character name",
-      "age": "Age or age range as string",
-      "role": "Brief role description",
+      "name": "Full name",
+      "age": "Age",
+      "role": "Role (e.g. Protagonist)",
       "appearance": {
-        "hair": "Hair description",
-        "eyes": "Eye description",
-        "height": "Height",
-        "build": "Physical build",
-        "distinguishing": "Distinguishing features",
-        "clothing": "Typical clothing"
+        "hair": "Short desc",
+        "eyes": "Short desc",
+        "height": "e.g. 6ft",
+        "build": "e.g. Athletic",
+        "distinguishing": "Short desc",
+        "clothing": "Short desc"
       },
-      "personality": ["Trait 1", "Trait 2", "Trait 3"],
-      "voiceStyle": "Voice description for TTS (e.g. Deep male, American, commanding)"
+      "personality": ["Trait1", "Trait2", "Trait3"],
+      "voiceStyle": "e.g. Deep male, American, commanding"
     }
   ],
   "scenes": [
     {
       "title": "Scene title",
-      "chapter": "Chapter reference",
-      "location": "Specific location",
-      "summary": "2-3 sentence summary",
+      "chapter": "Chapter X",
+      "location": "Location",
+      "summary": "One or two sentence summary.",
       "actionLevel": "high",
       "emotionalTone": "Tense",
-      "characters": ["Exact character name from characters array"],
+      "characters": ["Exact character name"],
       "shotBreakdown": [
         {
           "order": 1,
           "type": "wide",
           "angle": "eye-level",
-          "description": "What is visible in this shot",
-          "action": "What is happening",
-          "lighting": "Lighting description",
+          "description": "Short shot description",
+          "action": "What happens",
+          "lighting": "Lighting type",
           "duration": 8,
           "characters": ["Character name"],
-          "prompt": "Detailed cinematic image generation prompt"
+          "prompt": "Cinematic image prompt, under 120 chars"
         }
       ]
     }
   ]
 }
 
-Rules:
-- Extract 3–6 main characters who appear most prominently
-- Extract 3–5 action-heavy or dramatically intense scenes
-- Each scene needs 4–6 shots in shotBreakdown
-- actionLevel must be one of: "low", "medium", "high", "extreme"
-- shot type must be one of: "wide", "medium", "close-up", "aerial", "tracking"
-- shot angle must be one of: "eye-level", "low-angle", "high-angle", "bird-eye"
-- characters in scenes must be EXACT names from the characters array above
-- Return ONLY the JSON object, nothing else`;
+STRICT RULES — follow exactly or the response is unusable:
+- Extract 3–5 main characters only
+- Extract 3–4 best action/dramatic scenes only
+- Each scene: exactly 4 shots (no more)
+- All string values: under 120 characters
+- summary: 1–2 sentences max
+- actionLevel: one of "low" "medium" "high" "extreme"
+- shot type: one of "wide" "medium" "close-up" "aerial" "tracking"
+- shot angle: one of "eye-level" "low-angle" "high-angle" "bird-eye"
+- scene characters must be exact names from the characters array
+- Return ONLY the JSON — fully closed, no trailing content`;
 }
 
 export async function POST(request: NextRequest) {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) {
     return NextResponse.json(
-      { error: "ANTHROPIC_API_KEY is not set in Vercel environment variables. Go to Vercel Dashboard → Project → Settings → Environment Variables and add it." },
+      { error: "ANTHROPIC_API_KEY is not set. Add it in Vercel Dashboard → Project → Settings → Environment Variables." },
       { status: 503 }
     );
   }
 
   let title = "";
   let text = "";
-
   try {
     const body = await request.json() as { title: string; text: string };
     title = body.title ?? "";
@@ -103,31 +104,45 @@ export async function POST(request: NextRequest) {
   try {
     const client = new Anthropic({ apiKey });
 
-    // Use claude-3-5-haiku for speed — avoids Vercel serverless timeout on free tier
     const response = await client.messages.create({
       model: "claude-haiku-4-5",
-      max_tokens: 4096,
+      max_tokens: 8192,        // raised from 4096 — prevents JSON truncation
       system: SYSTEM,
       messages: [{ role: "user", content: buildPrompt(title, text) }],
     });
 
     const raw = (response.content[0] as { text: string }).text.trim();
 
-    // Strip any accidental markdown fences
+    // Strip accidental markdown fences
     const jsonStr = raw
       .replace(/^```(?:json)?\s*/i, "")
       .replace(/\s*```$/i, "")
       .trim();
 
+    // Attempt repair: if JSON is truncated, close any open structures
     let data: { characters: unknown[]; scenes: unknown[] };
     try {
       data = JSON.parse(jsonStr) as { characters: unknown[]; scenes: unknown[] };
-    } catch (parseErr) {
-      console.error("JSON parse error. Raw response:", raw.slice(0, 500));
-      return NextResponse.json(
-        { error: `AI returned malformed JSON: ${parseErr instanceof Error ? parseErr.message : "parse error"}` },
-        { status: 500 }
-      );
+    } catch {
+      // Try to repair truncated JSON by closing open arrays/objects
+      const repaired = repairJson(jsonStr);
+      try {
+        data = JSON.parse(repaired) as { characters: unknown[]; scenes: unknown[] };
+      } catch (finalErr) {
+        console.error("JSON parse failed. First 500 chars of response:", raw.slice(0, 500));
+        console.error("Last 200 chars:", raw.slice(-200));
+        return NextResponse.json(
+          {
+            error: `AI returned incomplete JSON (response was cut off). This usually means the manuscript produced too much output. Try uploading just the first 3 chapters.`,
+            debug: {
+              responseLength: raw.length,
+              stopReason: response.stop_reason,
+              parseError: finalErr instanceof Error ? finalErr.message : String(finalErr),
+            }
+          },
+          { status: 500 }
+        );
+      }
     }
 
     if (!Array.isArray(data.characters) || !Array.isArray(data.scenes)) {
@@ -147,14 +162,42 @@ export async function POST(request: NextRequest) {
     console.error("Analysis error:", err);
     const msg = err instanceof Error ? err.message : "Unknown error";
 
-    // Distinguish timeout from other errors
     if (msg.includes("timed out") || msg.includes("timeout") || msg.includes("FUNCTION_INVOCATION_TIMEOUT")) {
       return NextResponse.json(
-        { error: "Analysis timed out. Try uploading a shorter excerpt (first 3 chapters) or upgrade to Vercel Pro for longer function execution." },
+        { error: "Analysis timed out. Try uploading just the first 3 chapters of your manuscript." },
         { status: 504 }
       );
     }
 
     return NextResponse.json({ error: `Analysis failed: ${msg}` }, { status: 500 });
   }
+}
+
+/**
+ * Best-effort JSON repair for truncated responses.
+ * Counts open braces/brackets and closes them in reverse order.
+ */
+function repairJson(s: string): string {
+  const stack: string[] = [];
+  let inString = false;
+  let escape = false;
+
+  for (const ch of s) {
+    if (escape) { escape = false; continue; }
+    if (ch === "\\" && inString) { escape = true; continue; }
+    if (ch === '"') { inString = !inString; continue; }
+    if (inString) continue;
+    if (ch === "{" || ch === "[") stack.push(ch === "{" ? "}" : "]");
+    if (ch === "}" || ch === "]") stack.pop();
+  }
+
+  // Trim to last complete value — remove trailing comma if any
+  let result = s.trimEnd().replace(/,\s*$/, "");
+
+  // Close all open structures
+  while (stack.length > 0) {
+    result += stack.pop();
+  }
+
+  return result;
 }
