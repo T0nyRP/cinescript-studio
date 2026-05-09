@@ -263,14 +263,14 @@ function GeneratePageInner() {
     setShotStates((prev) => prev.map((s) => s.shotId === shotId ? { ...s, ...patch } : s))
   }, [])
 
-  // ── Poll fal.ai for video status ──
+  // ── Poll Galaxy AI for video status ──
   const pollVideo = useCallback(
     (shotId: string, requestId: string, model: string): Promise<void> => {
       return new Promise((resolve) => {
         const attempt = async () => {
           if (abortRef.current) { resolve(); return }
           try {
-            const res = await fetch("/api/poll-fal-status", {
+            const res = await fetch("/api/poll-galaxy-status", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({ requestId, model }),
@@ -344,7 +344,7 @@ function GeneratePageInner() {
         })
         const vidData = await vidRes.json() as { requestId?: string; model?: string; error?: string }
         if (!vidRes.ok || vidData.error) throw new Error(vidData.error || "Video submission failed")
-        if (!vidData.requestId) throw new Error("No requestId from fal.ai")
+        if (!vidData.requestId) throw new Error("No requestId from Galaxy AI")
 
         updateShot(shot.id, {
           videoPhase: "polling",
@@ -624,8 +624,8 @@ function GeneratePageInner() {
               In your Vercel Dashboard → Project → Settings → Environment Variables, add:
             </p>
             <ul className="text-xs text-blue-300/60 space-y-0.5 ml-3 list-disc">
-              <li><code className="font-mono">FAL_KEY</code> — from <a href="https://fal.ai" target="_blank" rel="noreferrer" className="underline">fal.ai</a> (image + video generation)</li>
-              <li><code className="font-mono">ELEVENLABS_API_KEY</code> — from <a href="https://elevenlabs.io" target="_blank" rel="noreferrer" className="underline">elevenlabs.io</a> (voice TTS, optional)</li>
+              <li><code className="font-mono">GALAXY_API_KEY</code> — from <a href="https://galaxy.ai" target="_blank" rel="noreferrer" className="underline">galaxy.ai</a> (image, video &amp; voice generation)</li>
+
             </ul>
           </div>
 

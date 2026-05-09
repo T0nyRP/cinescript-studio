@@ -3,14 +3,14 @@ import { NextRequest, NextResponse } from "next/server"
 export const runtime = "nodejs"
 export const maxDuration = 30
 
-// Uses Kling v1.6 image-to-video via fal.ai queue (async job submission)
-const MODEL = "fal-ai/kling-video/v1.6/standard/image-to-video"
+const GALAXY_API = "https://api.galaxy.ai/api/v1"
+const MODEL = "seedance-2.0-fast-image-to-video"
 
 export async function POST(request: NextRequest) {
-  const falKey = process.env.FAL_KEY
-  if (!falKey) {
+  const apiKey = process.env.GALAXY_API_KEY
+  if (!apiKey) {
     return NextResponse.json(
-      { error: "FAL_KEY is not set. Add it to your Vercel environment variables." },
+      { error: "GALAXY_API_KEY is not set. Add it to your Vercel environment variables." },
       { status: 503 }
     )
   }
@@ -31,36 +31,42 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "imageUrl and prompt are required" }, { status: 400 })
   }
 
+  // Clamp duration to Galaxy AI's accepted range (4–15 seconds)
+  const clampedDuration = Math.max(4, Math.min(15, Math.round(duration)))
+
   try {
-    // Submit to fal.ai queue — returns a requestId immediately, no waiting
-    const response = await fetch(`https://queue.fal.run/${MODEL}`, {
+    // Submit async job — Galaxy AI returns a runId immediately
+    const submitRes = await fetch(`${GALAXY_API}/nodes/${MODEL}/run`, {
       method: "POST",
       headers: {
-        "Authorization": `Key ${falKey}`,
+        "Authorization": `Bearer ${apiKey}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
         image_url: imageUrl,
         prompt,
-        duration: duration <= 5 ? "5" : "10",
-        aspect_ratio: "16:9",
+        duration: clampedDuration,
+        resolution: "720p",
+        generate_audio: false,
       }),
     })
 
-    if (!response.ok) {
-      const errText = await response.text()
+    if (!submitRes.ok) {
+      const errText = await submitRes.text()
       return NextResponse.json(
-        { error: `fal.ai video submission failed (${response.status}): ${errText}` },
+        { error: `Galaxy AI video submission failed (${submitRes.status}): ${errText}` },
         { status: 500 }
       )
     }
 
-    const result = await response.json() as { request_id: string }
-    if (!result.request_id) {
-      return NextResponse.json({ error: "No request_id returned from fal.ai" }, { status: 500 })
+    const result = await submitRes.json() as { runId?: string; id?: string }
+    const runId = result.runId ?? result.id
+    if (!runId) {
+      return NextResponse.json({ error: "No runId returned from Galaxy AI" }, { status: 500 })
     }
 
-    return NextResponse.json({ requestId: result.request_id, model: MODEL })
+    // Return the runId so the frontend can poll via /api/poll-galaxy-status
+    return NextResponse.json({ requestId: runId, model: MODEL })
   } catch (err) {
     return NextResponse.json(
       { error: `Video submission error: ${err instanceof Error ? err.message : String(err)}` },

@@ -3,6 +3,9 @@ import { NextRequest, NextResponse } from "next/server"
 export const runtime = "nodejs"
 export const maxDuration = 60
 
+const GALAXY_API = "https://api.galaxy.ai/api/v1"
+const MODEL = "gpt-image-2-text"
+
 const STYLE_SUFFIX: Record<string, string> = {
   cinematic: "cinematic lighting, dramatic shadows, 4K film quality, shallow depth of field",
   gritty: "raw handheld camera, desaturated realism, gritty texture",
@@ -12,11 +15,30 @@ const STYLE_SUFFIX: Record<string, string> = {
   "comic-book": "bold outlines, graphic novel style, vivid saturated colors",
 }
 
+function extractImageUrl(output: unknown): string | null {
+  if (!output || typeof output !== "object") return null
+  const o = output as Record<string, unknown>
+  // { images: [{ url }] }
+  if (Array.isArray(o.images) && o.images.length > 0) {
+    const first = o.images[0] as Record<string, unknown>
+    if (typeof first.url === "string") return first.url
+  }
+  // { imageUrl }
+  if (typeof o.imageUrl === "string") return o.imageUrl
+  // { url }
+  if (typeof o.url === "string") return o.url
+  // { image: { url } }
+  if (o.image && typeof (o.image as Record<string, unknown>).url === "string") {
+    return (o.image as Record<string, unknown>).url as string
+  }
+  return null
+}
+
 export async function POST(request: NextRequest) {
-  const falKey = process.env.FAL_KEY
-  if (!falKey) {
+  const apiKey = process.env.GALAXY_API_KEY
+  if (!apiKey) {
     return NextResponse.json(
-      { error: "FAL_KEY is not set. Go to your Vercel Dashboard → Project → Settings → Environment Variables and add FAL_KEY with your fal.ai API key." },
+      { error: "GALAXY_API_KEY is not set. Go to your Vercel Dashboard → Project → Settings → Environment Variables and add GALAXY_API_KEY (starts with gx_)." },
       { status: 503 }
     )
   }
@@ -38,37 +60,78 @@ export async function POST(request: NextRequest) {
   const fullPrompt = `${prompt}${charTag}, ${styleTag}, 16:9 widescreen, professional film photography, high detail`
 
   try {
-    const response = await fetch("https://fal.run/fal-ai/flux/dev", {
+    // Submit job to Galaxy AI
+    const submitRes = await fetch(`${GALAXY_API}/nodes/${MODEL}/run`, {
       method: "POST",
       headers: {
-        "Authorization": `Key ${falKey}`,
+        "Authorization": `Bearer ${apiKey}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
         prompt: fullPrompt,
-        image_size: "landscape_16_9",
-        num_inference_steps: 28,
-        guidance_scale: 3.5,
-        num_images: 1,
-        enable_safety_checker: false,
+        size: "1536x1024",
+        quality: "High",
+        output_format: "JPEG",
       }),
     })
 
-    if (!response.ok) {
-      const errText = await response.text()
+    if (!submitRes.ok) {
+      const errText = await submitRes.text()
       return NextResponse.json(
-        { error: `fal.ai image generation failed (${response.status}): ${errText}` },
+        { error: `Galaxy AI image submission failed (${submitRes.status}): ${errText}` },
         { status: 500 }
       )
     }
 
-    const result = await response.json() as { images: { url: string }[] }
-    const imageUrl = result.images?.[0]?.url
-    if (!imageUrl) {
-      return NextResponse.json({ error: "No image URL returned from fal.ai" }, { status: 500 })
+    const submitData = await submitRes.json() as { runId?: string; id?: string }
+    const runId = submitData.runId ?? submitData.id
+    if (!runId) {
+      return NextResponse.json({ error: "No runId returned from Galaxy AI" }, { status: 500 })
     }
 
-    return NextResponse.json({ imageUrl })
+    // Poll synchronously — max 55 s to stay within Vercel's 60s limit
+    const deadline = Date.now() + 55_000
+    const pollInterval = 2_000
+
+    while (Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, pollInterval))
+
+      const pollRes = await fetch(`${GALAXY_API}/nodes/runs/${runId}`, {
+        headers: { "Authorization": `Bearer ${apiKey}` },
+      })
+
+      if (!pollRes.ok) {
+        continue // transient error — keep trying
+      }
+
+      const pollData = await pollRes.json() as {
+        status: string
+        output?: unknown
+        error?: string
+      }
+
+      if (pollData.status === "completed") {
+        const imageUrl = extractImageUrl(pollData.output)
+        if (!imageUrl) {
+          return NextResponse.json({ error: "Image generation completed but no URL found in output" }, { status: 500 })
+        }
+        return NextResponse.json({ imageUrl })
+      }
+
+      if (pollData.status === "failed") {
+        return NextResponse.json(
+          { error: `Image generation failed: ${pollData.error ?? "unknown error"}` },
+          { status: 500 }
+        )
+      }
+
+      // pending / running — keep polling
+    }
+
+    return NextResponse.json(
+      { error: "Image generation timed out after 55 seconds. Try a simpler prompt or retry." },
+      { status: 504 }
+    )
   } catch (err) {
     return NextResponse.json(
       { error: `Image generation error: ${err instanceof Error ? err.message : String(err)}` },
