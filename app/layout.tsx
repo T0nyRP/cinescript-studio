@@ -3,14 +3,19 @@ import { Inter } from "next/font/google";
 import "./globals.css";
 import { Sidebar } from "@/components/sidebar";
 
+// next/font/google downloads and self-hosts Inter at /_next/static/media/
+// at build time — no requests to fonts.gstatic.com at runtime.
 const inter = Inter({
   subsets: ["latin"],
   variable: "--font-inter",
+  display: "swap",
+  preload: true,
 });
 
 export const metadata: Metadata = {
   title: "CineScript Studio — Manuscript to Cinematic Video",
-  description: "Transform manuscripts into 2-minute cinematic action videos optimized for Facebook",
+  description:
+    "Transform manuscripts into 2-minute cinematic action videos optimized for Facebook",
 };
 
 export default function RootLayout({
@@ -20,12 +25,12 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en" className="dark">
-      <body className={`${inter.variable} font-sans antialiased bg-[#0a0a0f] text-white`}>
+      <body
+        className={`${inter.variable} font-sans antialiased bg-[#0a0a0f] text-white`}
+      >
         <div className="flex h-screen overflow-hidden">
           <Sidebar />
-          <main className="flex-1 overflow-y-auto">
-            {children}
-          </main>
+          <main className="flex-1 overflow-y-auto">{children}</main>
         </div>
       </body>
     </html>
