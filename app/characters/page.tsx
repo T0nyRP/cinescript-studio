@@ -966,7 +966,7 @@ function CharacterCard({
 // ─── Main Page ────────────────────────────────────────────────────────────────
 
 export default function CharactersPage() {
-  const { characters, loading, updateCharacter, removeCharacter } = useCharacters()
+  const { characters, loading, updateCharacter, removeCharacter, replaceIdsInScenes } = useCharacters()
   const [mergeMode, setMergeMode] = useState(false)
   const [selectedIds, setSelectedIds] = useState<string[]>([])
   const [showMergeModal, setShowMergeModal] = useState(false)
@@ -985,6 +985,9 @@ export default function CharactersPage() {
     ]))
 
     await updateCharacter({ ...primary, referenceImages: allRefs })
+
+    // Rewrite scene character arrays: replace deleted IDs → primary ID
+    await replaceIdsInScenes(idsToDelete, primaryId)
 
     for (const id of idsToDelete) {
       await removeCharacter(id)

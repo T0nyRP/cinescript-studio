@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react"
 import * as store from "@/lib/data-store"
+import { replaceCharacterIdsInScenes } from "@/lib/data-store"
 import type { Character, Scene, VideoRecord } from "@/types"
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
@@ -55,7 +56,7 @@ export function useCharacters() {
     await store.saveAllCharacters(chars)
   }, [])
 
-  return { characters, loading, updateCharacter, addCharacter, removeCharacter, saveAll }
+  return { characters, loading, updateCharacter, addCharacter, removeCharacter, saveAll, replaceIdsInScenes: replaceCharacterIdsInScenes }
 }
 
 // ─── useScenes ───────────────────────────────────────────────────────────────

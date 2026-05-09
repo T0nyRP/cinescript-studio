@@ -231,6 +231,51 @@ export async function saveScene(scene: Scene): Promise<void> {
   }
 }
 
+/**
+ * After a character merge, rewrite all scene.characters arrays so the
+ * deleted IDs are replaced with the surviving primary ID.
+ */
+export async function replaceCharacterIdsInScenes(
+  oldIds: string[],
+  newId: string
+): Promise<void> {
+  const oldSet = new Set(oldIds)
+  const all = lsGet<Scene[]>("ember_scenes", EMBER_SCENES)
+
+  let changed = false
+  const updated = all.map((scene) => {
+    const original = scene.characters
+    const replaced = Array.from(
+      new Set(original.map((id) => (oldSet.has(id) ? newId : id)))
+    )
+    const didChange =
+      replaced.length !== original.length ||
+      replaced.some((id, i) => id !== original[i])
+    if (didChange) changed = true
+    return didChange ? { ...scene, characters: replaced } : scene
+  })
+
+  if (!changed) return
+
+  lsSet("ember_scenes", updated)
+
+  if (isSupabaseConfigured && supabase) {
+    const dirty = updated.filter((scene) => {
+      const orig = all.find((s) => s.id === scene.id)
+      return orig && orig.characters !== scene.characters
+    })
+    for (const scene of dirty) {
+      supabase
+        .from("scenes")
+        .upsert(sceneToRow(scene))
+        .then(({ error: e }) => {
+          if (e) console.warn("Supabase replaceCharacterIds error:", e.message)
+        })
+    }
+  }
+}
+
+
 function sceneToRow(s: Scene) {
   return {
     id: s.id,
