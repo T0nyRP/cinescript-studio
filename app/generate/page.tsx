@@ -1,16 +1,23 @@
 "use client"
 
-import { useState, useMemo, useEffect, Suspense } from "react"
+import { useState, useMemo, useEffect, useRef, useCallback, Suspense } from "react"
 import { useSearchParams } from "next/navigation"
-import { motion } from "framer-motion"
-import { Zap, Copy, Check, ChevronDown, ChevronUp, Volume2, MessageSquare, AlertCircle, Film, Loader2 } from "lucide-react"
+import { motion, AnimatePresence } from "framer-motion"
+import {
+  Zap, ChevronDown, ChevronUp, Volume2, MessageSquare, AlertCircle,
+  Film, Loader2, Play, Image as ImageIcon, Save, Check, X, RefreshCw,
+  Clapperboard,
+} from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { useCharacters, useScenes } from "@/hooks/use-data-store"
+import { Progress } from "@/components/ui/progress"
+import { useCharacters, useScenes, useVideos } from "@/hooks/use-data-store"
 import { cn } from "@/lib/utils"
-import type { Shot, ShotDialogue, Scene } from "@/types"
+import type { Shot, ShotDialogue, Scene, VideoRecord } from "@/types"
+
+// ─── Style Definitions ────────────────────────────────────────────────────────
 
 const STYLES = [
   { id: "cinematic", label: "Cinematic", color: "orange", desc: "4K filmic, shallow DOF, dramatic lighting" },
@@ -20,6 +27,8 @@ const STYLES = [
   { id: "realistic", label: "Hyper-Real", color: "green", desc: "Documentary realism, natural light" },
   { id: "comic-book", label: "Comic Book", color: "yellow", desc: "Bold outlines, graphic panel transitions" },
 ]
+
+// ─── Dialogue Components ──────────────────────────────────────────────────────
 
 function DialogueLine({ line, onUpdate, onRemove }: { line: ShotDialogue; onUpdate: (l: ShotDialogue) => void; onRemove: () => void }) {
   return (
@@ -98,16 +107,133 @@ function ShotCard({ shot, sceneCharacters, onUpdateDialogue }: { shot: Shot; sce
   )
 }
 
-// Inner component that uses useSearchParams (must be inside Suspense)
+// ─── Generation Types ─────────────────────────────────────────────────────────
+
+type Phase = "pending" | "loading" | "polling" | "done" | "error"
+
+interface ShotGenState {
+  shotId: string
+  order: number
+  description: string
+  imagePhase: Phase
+  imageUrl?: string
+  imageError?: string
+  videoPhase: Phase
+  videoUrl?: string
+  videoRequestId?: string
+  videoModel?: string
+  videoError?: string
+}
+
+type PipelinePhase = "idle" | "running" | "done" | "partial"
+
+// ─── Shot Progress Card ───────────────────────────────────────────────────────
+
+function ShotProgressCard({ state, onRetry }: { state: ShotGenState; onRetry: () => void }) {
+  const imageOk = state.imagePhase === "done"
+  const videoOk = state.videoPhase === "done"
+  const hasError = state.imagePhase === "error" || state.videoPhase === "error"
+
+  return (
+    <motion.div
+      layout
+      initial={{ opacity: 0, y: 8 }}
+      animate={{ opacity: 1, y: 0 }}
+      className={cn(
+        "bg-white/3 border rounded-xl overflow-hidden",
+        hasError ? "border-red-500/30" : videoOk ? "border-green-500/20" : "border-white/8"
+      )}
+    >
+      <div className="flex items-center gap-3 px-4 py-3 border-b border-white/5">
+        <div className="w-6 h-6 rounded-md bg-white/8 flex items-center justify-center flex-shrink-0">
+          <span className="text-xs font-bold text-white/50">{state.order}</span>
+        </div>
+        <p className="flex-1 text-xs text-white/60 line-clamp-1">{state.description}</p>
+        {videoOk && <Check className="w-4 h-4 text-green-400 flex-shrink-0" />}
+        {hasError && (
+          <button onClick={onRetry} className="flex items-center gap-1 text-xs text-orange-400 hover:text-orange-300">
+            <RefreshCw className="w-3 h-3" />Retry
+          </button>
+        )}
+      </div>
+
+      <div className="flex gap-3 p-3">
+        {/* Image cell */}
+        <div className="flex-1">
+          <p className="text-xs text-white/30 mb-2 flex items-center gap-1">
+            <ImageIcon className="w-2.5 h-2.5" />Still
+          </p>
+          <div className="w-full aspect-video rounded-lg bg-white/5 overflow-hidden flex items-center justify-center relative">
+            {state.imagePhase === "pending" && <div className="text-white/15 text-xs">waiting…</div>}
+            {state.imagePhase === "loading" && <Loader2 className="w-5 h-5 text-orange-400 animate-spin" />}
+            {state.imagePhase === "error" && (
+              <div className="flex flex-col items-center gap-1 p-2 text-center">
+                <X className="w-4 h-4 text-red-400" />
+                <p className="text-xs text-red-400/80 line-clamp-2">{state.imageError}</p>
+              </div>
+            )}
+            {imageOk && state.imageUrl && (
+              <img src={state.imageUrl} alt="Shot still" className="w-full h-full object-cover" />
+            )}
+          </div>
+        </div>
+
+        {/* Video cell */}
+        <div className="flex-1">
+          <p className="text-xs text-white/30 mb-2 flex items-center gap-1">
+            <Film className="w-2.5 h-2.5" />Video clip
+          </p>
+          <div className="w-full aspect-video rounded-lg bg-white/5 overflow-hidden flex items-center justify-center relative">
+            {(state.videoPhase === "pending" || !imageOk) && <div className="text-white/15 text-xs">waiting…</div>}
+            {(state.videoPhase === "loading" || state.videoPhase === "polling") && (
+              <div className="flex flex-col items-center gap-2">
+                <Loader2 className="w-5 h-5 text-orange-400 animate-spin" />
+                <p className="text-xs text-white/30">{state.videoPhase === "loading" ? "Submitting…" : "Generating…"}</p>
+              </div>
+            )}
+            {state.videoPhase === "error" && (
+              <div className="flex flex-col items-center gap-1 p-2 text-center">
+                <X className="w-4 h-4 text-red-400" />
+                <p className="text-xs text-red-400/80 line-clamp-2">{state.videoError}</p>
+              </div>
+            )}
+            {videoOk && state.videoUrl && (
+              <video
+                src={state.videoUrl}
+                className="w-full h-full object-cover"
+                controls
+                muted
+                loop
+                playsInline
+              />
+            )}
+          </div>
+        </div>
+      </div>
+    </motion.div>
+  )
+}
+
+// ─── Main Page ────────────────────────────────────────────────────────────────
+
 function GeneratePageInner() {
   const searchParams = useSearchParams()
   const { characters } = useCharacters()
   const { scenes, loading, updateScene } = useScenes()
+  const { addVideo } = useVideos()
+
   const [selectedSceneId, setSelectedSceneId] = useState<string>("")
   const [selectedStyle, setSelectedStyle] = useState("cinematic")
-  const [copied, setCopied] = useState(false)
+  const [activeTab, setActiveTab] = useState("setup")
 
-  // Once scenes load, set selected scene from URL param or default to first scene
+  // Generation state
+  const [pipeline, setPipeline] = useState<PipelinePhase>("idle")
+  const [shotStates, setShotStates] = useState<ShotGenState[]>([])
+  const [saved, setSaved] = useState(false)
+  const pollingRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({})
+  const abortRef = useRef(false)
+
+  // Set scene from URL param
   useEffect(() => {
     if (!loading && scenes.length > 0) {
       const paramScene = searchParams.get("scene")
@@ -127,59 +253,221 @@ function GeneratePageInner() {
     if (!scene) return
     const updated: Scene = {
       ...scene,
-      shotBreakdown: (scene.shotBreakdown ?? []).map((s) => s.id === shotId ? { ...s, dialogue } : s)
+      shotBreakdown: (scene.shotBreakdown ?? []).map((s) => s.id === shotId ? { ...s, dialogue } : s),
     }
     updateScene(updated)
   }
 
-  const generationBrief = useMemo(() => {
-    if (!scene) return ""
-    const style = STYLES.find((s) => s.id === selectedStyle)
-    const charLines = sceneCharacters.map((c) => {
-      const voice = c.voice?.id ? `Voice: ${c.voice.name ?? c.voice.id} (ElevenLabs ${c.voice.id})` : "Voice: Not assigned"
-      const refs = (c.referenceImages?.length ?? 0) > 0 ? `${c.referenceImages!.length} reference image(s)` : "No reference images"
-      return `• ${c.name} — ${voice} — ${refs}`
-    }).join("\n")
+  // ── Update a single shot's generation state ──
+  const updateShot = useCallback((shotId: string, patch: Partial<ShotGenState>) => {
+    setShotStates((prev) => prev.map((s) => s.shotId === shotId ? { ...s, ...patch } : s))
+  }, [])
 
-    const shotLines = (scene.shotBreakdown ?? []).map((shot) => {
-      const d = (shot.dialogue ?? []).map((l) => `    ${l.characterName} [${l.type}]: "${l.line}"`).join("\n")
-      return `Shot ${shot.order} (${shot.type}, ${shot.duration}s): ${shot.description}${d ? "\n" + d : ""}`
-    }).join("\n")
+  // ── Poll fal.ai for video status ──
+  const pollVideo = useCallback(
+    (shotId: string, requestId: string, model: string): Promise<void> => {
+      return new Promise((resolve) => {
+        const attempt = async () => {
+          if (abortRef.current) { resolve(); return }
+          try {
+            const res = await fetch("/api/poll-fal-status", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ requestId, model }),
+            })
+            const data = await res.json() as { status: string; videoUrl?: string; error?: string }
 
-    return `GENERATION BRIEF
-══════════════════════════════════════════
-Scene: ${scene.title}
-Chapter: ${scene.chapter}
-Location: ${scene.location}
-Style: ${style?.label} — ${style?.desc}
-Format: 16:9 Facebook, 720p
-Duration: ~${((scene.shotBreakdown?.length ?? 8) * 10)}s (${scene.shotBreakdown?.length ?? 8} shots × 10s)
+            if (data.status === "completed") {
+              updateShot(shotId, { videoPhase: "done", videoUrl: data.videoUrl })
+              resolve()
+            } else if (data.status === "failed" || data.status === "error") {
+              updateShot(shotId, { videoPhase: "error", videoError: data.error ?? "Generation failed" })
+              resolve()
+            } else {
+              // Still processing — poll again in 8 seconds
+              pollingRef.current[shotId] = setTimeout(attempt, 8000)
+            }
+          } catch (err) {
+            updateShot(shotId, { videoPhase: "error", videoError: String(err) })
+            resolve()
+          }
+        }
+        attempt()
+      })
+    },
+    [updateShot]
+  )
 
-CHARACTERS & VOICES
-${charLines || "No characters assigned to this scene"}
+  // ── Generate a single shot ──
+  const generateShot = useCallback(
+    async (shot: Shot) => {
+      if (abortRef.current) return
 
-SHOT BREAKDOWN & DIALOGUE
-${shotLines || "No shots defined"}
+      // Build character description for the image prompt
+      const shotChars = sceneCharacters.filter((c) =>
+        (shot.characters ?? []).includes(c.name) || scene?.characters?.includes(c.id)
+      )
+      const characterDesc = shotChars
+        .map((c) => `${c.name} (${c.appearance?.hair ?? ""} hair, ${c.appearance?.build ?? ""})`)
+        .filter(Boolean)
+        .join(", ")
 
-INSTRUCTIONS
-- Use gpt-image-2-edit with character reference images for all character shots
-- Animate each still with seedance-2.0-fast-image-to-video at 10s, 720p, native audio on
-- Generate TTS for each dialogue line using the character's assigned ElevenLabs voice
-- Mix dialogue audio into each clip before merging
-- Merge in batches of 4, then join halves
-- Generate orchestral film score with lyria3-pro (no spy/action keywords)
-- Mix score at 18% volume, 3s fade out
-- Update Videos page with final URL
-══════════════════════════════════════════`
-  }, [scene, selectedStyle, sceneCharacters])
+      // ── Step 1: Generate image ──
+      updateShot(shot.id, { imagePhase: "loading" })
+      try {
+        const imgRes = await fetch("/api/generate-shot-image", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            prompt: (shot as Shot & { prompt?: string }).prompt || shot.description,
+            style: selectedStyle,
+            characterDesc,
+          }),
+        })
+        const imgData = await imgRes.json() as { imageUrl?: string; error?: string }
+        if (!imgRes.ok || imgData.error) throw new Error(imgData.error || "Image generation failed")
+        if (!imgData.imageUrl) throw new Error("No image URL returned")
 
-  const handleCopy = () => {
-    navigator.clipboard.writeText(generationBrief)
-    setCopied(true)
-    setTimeout(() => setCopied(false), 2000)
+        updateShot(shot.id, { imagePhase: "done", imageUrl: imgData.imageUrl, videoPhase: "loading" })
+
+        if (abortRef.current) return
+
+        // ── Step 2: Submit video job ──
+        const vidRes = await fetch("/api/generate-shot-video", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            imageUrl: imgData.imageUrl,
+            prompt: (shot as Shot & { prompt?: string }).prompt || shot.description,
+            duration: shot.duration ?? 10,
+          }),
+        })
+        const vidData = await vidRes.json() as { requestId?: string; model?: string; error?: string }
+        if (!vidRes.ok || vidData.error) throw new Error(vidData.error || "Video submission failed")
+        if (!vidData.requestId) throw new Error("No requestId from fal.ai")
+
+        updateShot(shot.id, {
+          videoPhase: "polling",
+          videoRequestId: vidData.requestId,
+          videoModel: vidData.model,
+        })
+
+        // ── Step 3: Poll until video done ──
+        await pollVideo(shot.id, vidData.requestId, vidData.model ?? "")
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err)
+        // Use functional update via setShotStates to get current state
+        setShotStates((prev) => prev.map((s) => {
+          if (s.shotId !== shot.id) return s
+          const imagePhase: Phase = s.imagePhase === "loading" ? "error" : s.imagePhase
+          const imageError = s.imagePhase === "loading" ? msg : s.imageError
+          const videoPhase: Phase = s.videoPhase === "loading" || s.videoPhase === "polling" ? "error" : s.videoPhase
+          const videoError = s.videoPhase === "loading" || s.videoPhase === "polling" ? msg : s.videoError
+          return { ...s, imagePhase, imageError, videoPhase, videoError }
+        }))
+      }
+    },
+    [sceneCharacters, scene, selectedStyle, updateShot, pollVideo]
+  )
+
+  // ── Start full pipeline ──
+  const handleGenerate = useCallback(async () => {
+    if (!scene?.shotBreakdown?.length) return
+    abortRef.current = false
+    setSaved(false)
+
+    // Initialize all shot states
+    const initial: ShotGenState[] = scene.shotBreakdown.map((shot) => ({
+      shotId: shot.id,
+      order: shot.order,
+      description: shot.description,
+      imagePhase: "pending",
+      videoPhase: "pending",
+    }))
+    setShotStates(initial)
+    setPipeline("running")
+    setActiveTab("generate")
+
+    // Process shots sequentially (prevents rate-limiting issues)
+    for (const shot of scene.shotBreakdown) {
+      if (abortRef.current) break
+      await generateShot(shot)
+    }
+
+    // Pipeline completion is handled by the useEffect below (avoids stale closure)
+  }, [scene, generateShot])
+
+  // ── Retry a failed shot ──
+  const handleRetry = useCallback(
+    (shot: Shot) => {
+      updateShot(shot.id, {
+        imagePhase: "pending",
+        imageUrl: undefined,
+        imageError: undefined,
+        videoPhase: "pending",
+        videoUrl: undefined,
+        videoRequestId: undefined,
+        videoError: undefined,
+      })
+      generateShot(shot)
+    },
+    [generateShot, updateShot]
+  )
+
+  // ── Stop generation ──
+  const handleStop = () => {
+    abortRef.current = true
+    Object.values(pollingRef.current).forEach(clearTimeout)
+    pollingRef.current = {}
+    setPipeline("partial")
   }
 
-  // Loading state
+  // ── Save to Videos ──
+  const handleSaveToVideos = async () => {
+    const completedClips = shotStates.filter((s) => s.videoPhase === "done" && s.videoUrl)
+    if (!completedClips.length || !scene) return
+
+    const primaryVideoUrl = completedClips[0].videoUrl!
+    const thumbnailUrl = completedClips[0].imageUrl ?? ""
+    const styleName = STYLES.find((s) => s.id === selectedStyle)?.label ?? selectedStyle
+
+    const record: VideoRecord = {
+      id: `video-${Date.now()}`,
+      title: scene.title,
+      subtitle: `${styleName} · ${completedClips.length} clip${completedClips.length > 1 ? "s" : ""}`,
+      videoUrl: primaryVideoUrl,
+      thumbnailUrl,
+      duration: `${completedClips.length * (scene.shotBreakdown?.[0]?.duration ?? 10)}s`,
+      shots: completedClips.length,
+      scene: scene.title,
+      style: styleName,
+      characters: sceneCharacters.map((c) => c.name),
+      referenceImages: [],
+      generatedAt: new Date().toISOString(),
+      facebookReady: true,
+      tags: ["cinescript", selectedStyle, scene.chapter ?? ""],
+      hasVoice: false,
+    }
+
+    await addVideo(record)
+    setSaved(true)
+  }
+
+  // ── Derived stats ──
+  const doneCount = shotStates.filter((s) => s.videoPhase === "done").length
+  const totalShots = shotStates.length
+  const progressPct = totalShots > 0 ? Math.round((doneCount / totalShots) * 100) : 0
+  const allDone = totalShots > 0 && shotStates.every((s) => s.videoPhase === "done" || s.videoPhase === "error")
+
+  // Update pipeline phase when all shots resolve
+  useEffect(() => {
+    if (pipeline === "running" && allDone) {
+      const anyError = shotStates.some((s) => s.imagePhase === "error" || s.videoPhase === "error")
+      setPipeline(anyError ? "partial" : "done")
+    }
+  }, [allDone, pipeline, shotStates])
+
+  // ── Loading / empty states ──
   if (loading) {
     return (
       <div className="min-h-screen p-8 flex items-center justify-center">
@@ -191,7 +479,6 @@ INSTRUCTIONS
     )
   }
 
-  // No scenes
   if (!loading && scenes.length === 0) {
     return (
       <div className="min-h-screen p-8 flex items-center justify-center">
@@ -205,6 +492,7 @@ INSTRUCTIONS
 
   if (!scene) return null
 
+  // ── Render ──
   return (
     <div className="min-h-screen p-8">
       <motion.div initial={{ opacity: 0, y: -20 }} animate={{ opacity: 1, y: 0 }} className="mb-8">
@@ -212,10 +500,10 @@ INSTRUCTIONS
           <Zap className="w-3 h-3 mr-1" />Generate Video
         </Badge>
         <h1 className="text-3xl font-bold text-white mb-2">Video Generation</h1>
-        <p className="text-white/50 text-sm max-w-lg">Configure your scene, assign dialogue, then copy the brief into the AI chat to generate your video.</p>
+        <p className="text-white/50 text-sm max-w-lg">Configure your scene and style, then generate video clips for each shot automatically.</p>
       </motion.div>
 
-      <Tabs defaultValue="setup" className="space-y-6">
+      <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-6">
         <TabsList className="bg-white/5 border border-white/8 p-1 rounded-xl">
           <TabsTrigger value="setup" className="text-xs rounded-lg data-[state=active]:bg-orange-500 data-[state=active]:text-white">Setup</TabsTrigger>
           <TabsTrigger value="dialogue" className="text-xs rounded-lg data-[state=active]:bg-orange-500 data-[state=active]:text-white">
@@ -226,7 +514,11 @@ INSTRUCTIONS
               </span>
             )}
           </TabsTrigger>
-          <TabsTrigger value="brief" className="text-xs rounded-lg data-[state=active]:bg-orange-500 data-[state=active]:text-white">Brief</TabsTrigger>
+          <TabsTrigger value="generate" className="text-xs rounded-lg data-[state=active]:bg-orange-500 data-[state=active]:text-white">
+            Generate
+            {pipeline === "done" && <Check className="ml-1.5 w-3 h-3 text-green-300" />}
+            {pipeline === "running" && <Loader2 className="ml-1.5 w-3 h-3 animate-spin" />}
+          </TabsTrigger>
         </TabsList>
 
         {/* ── SETUP TAB ── */}
@@ -298,6 +590,15 @@ INSTRUCTIONS
               </p>
             )}
           </div>
+
+          {/* CTA */}
+          <Button
+            className="w-full bg-orange-500 hover:bg-orange-600 text-white font-semibold h-11 gap-2"
+            onClick={() => setActiveTab("generate")}
+          >
+            <Clapperboard className="w-4 h-4" />
+            Continue to Generate
+          </Button>
         </TabsContent>
 
         {/* ── DIALOGUE TAB ── */}
@@ -313,42 +614,131 @@ INSTRUCTIONS
           )}
         </TabsContent>
 
-        {/* ── BRIEF TAB ── */}
-        <TabsContent value="brief">
-          <div className="space-y-4">
-            <div className="flex items-center justify-between">
-              <p className="text-xs text-white/50">Copy this brief and paste it into the AI chat to generate your video.</p>
-              <Button size="sm" className={cn("text-xs h-8 gap-1.5", copied ? "bg-green-600 hover:bg-green-700" : "bg-orange-500 hover:bg-orange-600")} onClick={handleCopy}>
-                {copied ? <><Check className="w-3 h-3" />Copied!</> : <><Copy className="w-3 h-3" />Copy Brief</>}
-              </Button>
-            </div>
+        {/* ── GENERATE TAB ── */}
+        <TabsContent value="generate" className="space-y-6">
 
-            {/* Stats */}
-            <div className="grid grid-cols-3 gap-3">
-              {[
-                { icon: Film, label: "Shots", value: scene.shotBreakdown?.length ?? 0 },
-                { icon: MessageSquare, label: "Dialogue Lines", value: (scene.shotBreakdown ?? []).reduce((n, s) => n + (s.dialogue?.length ?? 0), 0) },
-                { icon: Volume2, label: "Voices Assigned", value: sceneCharacters.filter(c => c.voice?.id).length + "/" + sceneCharacters.length },
-              ].map(({ icon: Icon, label, value }) => (
-                <div key={label} className="bg-white/3 border border-white/8 rounded-xl p-3 text-center">
-                  <Icon className="w-4 h-4 text-white/30 mx-auto mb-1" />
-                  <p className="text-lg font-bold text-white">{value}</p>
-                  <p className="text-xs text-white/40">{label}</p>
-                </div>
-              ))}
-            </div>
+          {/* API Key setup notice */}
+          <div className="bg-blue-500/8 border border-blue-500/20 rounded-xl p-4 space-y-1">
+            <p className="text-xs font-semibold text-blue-300">Required: Add API Keys to Vercel</p>
+            <p className="text-xs text-blue-300/70">
+              In your Vercel Dashboard → Project → Settings → Environment Variables, add:
+            </p>
+            <ul className="text-xs text-blue-300/60 space-y-0.5 ml-3 list-disc">
+              <li><code className="font-mono">FAL_KEY</code> — from <a href="https://fal.ai" target="_blank" rel="noreferrer" className="underline">fal.ai</a> (image + video generation)</li>
+              <li><code className="font-mono">ELEVENLABS_API_KEY</code> — from <a href="https://elevenlabs.io" target="_blank" rel="noreferrer" className="underline">elevenlabs.io</a> (voice TTS, optional)</li>
+            </ul>
+          </div>
 
-            <div className="bg-black/40 border border-white/8 rounded-xl p-4 font-mono text-xs text-white/60 leading-relaxed whitespace-pre overflow-auto max-h-96">
-              {generationBrief}
+          {/* Scene + Style summary */}
+          <div className="grid grid-cols-2 gap-3">
+            <div className="bg-white/3 border border-white/8 rounded-xl p-3">
+              <p className="text-xs text-white/30 mb-1">Scene</p>
+              <p className="text-sm font-semibold text-white line-clamp-2">{scene.title}</p>
+              <p className="text-xs text-white/40 mt-0.5">{scene.shotBreakdown?.length ?? 0} shots</p>
+            </div>
+            <div className="bg-white/3 border border-white/8 rounded-xl p-3">
+              <p className="text-xs text-white/30 mb-1">Style</p>
+              <p className="text-sm font-semibold text-white">{STYLES.find(s => s.id === selectedStyle)?.label}</p>
+              <p className="text-xs text-white/40 mt-0.5">{STYLES.find(s => s.id === selectedStyle)?.desc}</p>
             </div>
           </div>
+
+          {/* Progress bar (during / after generation) */}
+          {pipeline !== "idle" && totalShots > 0 && (
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <p className="text-xs text-white/50">{doneCount} / {totalShots} clips complete</p>
+                <p className="text-xs text-white/50">{progressPct}%</p>
+              </div>
+              <Progress value={progressPct} className="h-1.5 bg-white/8" />
+            </div>
+          )}
+
+          {/* Action buttons */}
+          <div className="flex gap-3">
+            {pipeline === "idle" || pipeline === "partial" ? (
+              <Button
+                className="flex-1 bg-orange-500 hover:bg-orange-600 text-white font-semibold h-11 gap-2"
+                onClick={handleGenerate}
+                disabled={!scene.shotBreakdown?.length}
+              >
+                <Clapperboard className="w-4 h-4" />
+                {pipeline === "partial" ? "Regenerate" : "Generate Video"}
+              </Button>
+            ) : pipeline === "running" ? (
+              <Button
+                className="flex-1 bg-red-500/20 hover:bg-red-500/30 text-red-400 border border-red-500/30 font-semibold h-11 gap-2"
+                onClick={handleStop}
+              >
+                <X className="w-4 h-4" />Stop
+              </Button>
+            ) : null}
+
+            {(pipeline === "done" || pipeline === "partial") && doneCount > 0 && (
+              <Button
+                className={cn("flex-1 font-semibold h-11 gap-2", saved ? "bg-green-600 hover:bg-green-700" : "bg-white/10 hover:bg-white/15 text-white border border-white/15")}
+                onClick={handleSaveToVideos}
+                disabled={saved}
+              >
+                {saved ? <><Check className="w-4 h-4" />Saved!</> : <><Save className="w-4 h-4" />Save to Videos</>}
+              </Button>
+            )}
+          </div>
+
+          {/* Shot progress cards */}
+          <AnimatePresence>
+            {shotStates.map((state) => {
+              const shot = scene.shotBreakdown?.find((s) => s.id === state.shotId)
+              return (
+                <ShotProgressCard
+                  key={state.shotId}
+                  state={state}
+                  onRetry={() => shot && handleRetry(shot)}
+                />
+              )
+            })}
+          </AnimatePresence>
+
+          {/* Idle placeholder */}
+          {pipeline === "idle" && (
+            <div className="border border-dashed border-white/10 rounded-xl p-10 text-center">
+              <Clapperboard className="w-10 h-10 text-white/15 mx-auto mb-3" />
+              <p className="text-sm text-white/30">Click <strong className="text-white/50">Generate Video</strong> to start.</p>
+              <p className="text-xs text-white/20 mt-1">Each shot will be rendered as a still image, then animated into a video clip.</p>
+            </div>
+          )}
+
+          {/* Done message */}
+          {pipeline === "done" && (
+            <motion.div
+              initial={{ opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="bg-green-500/10 border border-green-500/20 rounded-xl p-4 text-center"
+            >
+              <Check className="w-6 h-6 text-green-400 mx-auto mb-2" />
+              <p className="text-sm font-semibold text-green-300">All {doneCount} clips generated!</p>
+              <p className="text-xs text-green-400/60 mt-1">
+                {saved ? "Saved to Videos page." : "Click Save to Videos to add them to your library."}
+              </p>
+            </motion.div>
+          )}
+
+          {pipeline === "partial" && doneCount > 0 && (
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              className="bg-orange-500/8 border border-orange-500/20 rounded-xl p-4 text-center"
+            >
+              <AlertCircle className="w-5 h-5 text-orange-400 mx-auto mb-2" />
+              <p className="text-sm text-orange-300">{doneCount} of {totalShots} clips completed — some failed. Use Retry on failed shots.</p>
+            </motion.div>
+          )}
         </TabsContent>
       </Tabs>
     </div>
   )
 }
 
-// Wrap in Suspense because useSearchParams requires it in Next.js App Router
 export default function GeneratePage() {
   return (
     <Suspense fallback={
