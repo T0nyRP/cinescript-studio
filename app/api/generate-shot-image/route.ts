@@ -77,10 +77,15 @@ export async function POST(request: NextRequest) {
 
     if (!submitRes.ok) {
       const errText = await submitRes.text()
-      return NextResponse.json(
-        { error: `Galaxy AI image submission failed (${submitRes.status}): ${errText}` },
-        { status: 500 }
-      )
+      // Log the full response so it appears in Vercel Function Logs for diagnosis
+      console.error(`[generate-shot-image] Galaxy AI rejected request (${submitRes.status}):`, errText)
+      const userMsg =
+        submitRes.status === 401 || submitRes.status === 403
+          ? "GALAXY_API_KEY is invalid or unauthorised. Check your Vercel env vars."
+          : submitRes.status === 422 || submitRes.status === 400
+          ? `Galaxy AI rejected input (${submitRes.status}): ${errText}`
+          : `Galaxy AI error (${submitRes.status}): ${errText}`
+      return NextResponse.json({ error: userMsg }, { status: 500 })
     }
 
     const submitData = await submitRes.json() as { runId?: string; id?: string }

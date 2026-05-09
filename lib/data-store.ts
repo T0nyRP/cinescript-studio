@@ -16,6 +16,18 @@ import { EMBER_CHARACTERS, EMBER_SCENES, DEFAULT_VIDEOS } from "@/lib/default-da
 import type { Character, Scene, VideoRecord } from "@/types"
 
 // ─────────────────────────────────────────────
+// In-flight deduplication
+// ─────────────────────────────────────────────
+// If multiple components call getCharacters() / getScenes() / getVideos()
+// simultaneously (e.g. on initial mount), they all share the same pending
+// promise instead of firing N parallel Supabase queries.
+let _getCharactersInFlight: Promise<Character[]> | null = null
+let _getScenesInFlight: Promise<Scene[]> | null = null
+let _getVideosInFlight: Promise<VideoRecord[]> | null = null
+
+
+
+// ─────────────────────────────────────────────
 // Per-session back-fill lock
 // ─────────────────────────────────────────────
 // Tracks IDs that have been attempted for back-fill this session so we
@@ -90,12 +102,18 @@ function mergeById<T extends { id: string }>(local: T[], remote: T[]): T[] {
 // Characters
 // ─────────────────────────────────────────────
 export async function getCharacters(): Promise<Character[]> {
+  if (_getCharactersInFlight) return _getCharactersInFlight
+  _getCharactersInFlight = _fetchCharacters()
+  try { return await _getCharactersInFlight } finally { _getCharactersInFlight = null }
+}
+
+async function _fetchCharacters(): Promise<Character[]> {
   // Always read localStorage first — it has the freshest local writes
   const localChars = lsGet<Character[]>("ember_characters", EMBER_CHARACTERS)
 
   if ((await checkSupabaseHealth()) && supabase) {
     try {
-      const { data, error } = await supabase.from("characters").select("*").order("created_at")
+      const { data, error } = await supabase.from("characters").select("*").order("created_at").abortSignal(AbortSignal.timeout(8000))
       if (!error && data) {
         const remoteChars = data.map(rowToCharacter)
         // Merge: union by ID. Remote wins for existing IDs, local-only items preserved.
@@ -229,12 +247,18 @@ function rowToCharacter(row: Record<string, unknown>): Character {
 // Scenes
 // ─────────────────────────────────────────────
 export async function getScenes(): Promise<Scene[]> {
+  if (_getScenesInFlight) return _getScenesInFlight
+  _getScenesInFlight = _fetchScenes()
+  try { return await _getScenesInFlight } finally { _getScenesInFlight = null }
+}
+
+async function _fetchScenes(): Promise<Scene[]> {
   // Always read localStorage first
   const localScenes = lsGet<Scene[]>("ember_scenes", EMBER_SCENES)
 
   if ((await checkSupabaseHealth()) && supabase) {
     try {
-      const { data, error } = await supabase.from("scenes").select("*").order("created_at")
+      const { data, error } = await supabase.from("scenes").select("*").order("created_at").abortSignal(AbortSignal.timeout(8000))
       if (!error && data) {
         const remoteScenes = data.map(rowToScene)
         // Merge: union by ID. Remote wins for existing IDs, local-only items preserved.
@@ -386,11 +410,17 @@ function rowToScene(row: Record<string, unknown>): Scene {
 // Videos
 // ─────────────────────────────────────────────
 export async function getVideos(): Promise<VideoRecord[]> {
+  if (_getVideosInFlight) return _getVideosInFlight
+  _getVideosInFlight = _fetchVideos()
+  try { return await _getVideosInFlight } finally { _getVideosInFlight = null }
+}
+
+async function _fetchVideos(): Promise<VideoRecord[]> {
   const localVideos = lsGet<VideoRecord[]>("ember_videos", DEFAULT_VIDEOS)
 
   if ((await checkSupabaseHealth()) && supabase) {
     try {
-      const { data, error } = await supabase.from("videos").select("*").order("generated_at", { ascending: false })
+      const { data, error } = await supabase.from("videos").select("*").order("generated_at", { ascending: false }).abortSignal(AbortSignal.timeout(8000))
       if (!error && data) {
         const remoteVideos = data.map(rowToVideo)
         const merged = mergeById(localVideos, remoteVideos)
