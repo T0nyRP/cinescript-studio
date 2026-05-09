@@ -4,7 +4,7 @@ export const runtime = "nodejs"
 export const maxDuration = 60
 
 const GALAXY_API = "https://api.galaxy.ai/api/v1"
-const MODEL = "gpt-image-2-text"
+const MODEL = "gpt_image_2"
 
 const STYLE_SUFFIX: Record<string, string> = {
   cinematic: "cinematic lighting, dramatic shadows, 4K film quality, shallow depth of field",

@@ -4,7 +4,7 @@ export const runtime = "nodejs"
 export const maxDuration = 60
 
 const GALAXY_API = "https://api.galaxy.ai/api/v1"
-const MODEL = "elevenlabs-v3-tts"
+const MODEL = "elevenlabs_v3_tts"
 
 function extractAudioUrl(output: unknown): string | null {
   if (!output || typeof output !== "object") return null

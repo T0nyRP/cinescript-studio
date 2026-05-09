@@ -4,7 +4,7 @@ export const runtime = "nodejs"
 export const maxDuration = 30
 
 const GALAXY_API = "https://api.galaxy.ai/api/v1"
-const MODEL = "seedance-2.0-fast-image-to-video"
+const MODEL = "seedance_2_0_fast"
 
 export async function POST(request: NextRequest) {
   const apiKey = process.env.GALAXY_API_KEY

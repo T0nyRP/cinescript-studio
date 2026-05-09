@@ -33,7 +33,7 @@ export async function GET() {
   if (apiKey) {
     try {
       const testRes = await fetch(
-        "https://api.galaxy.ai/api/v1/nodes/gpt-image-2-text/run",
+        "https://api.galaxy.ai/api/v1/nodes/gpt_image_2/run",
         {
           method: "POST",
           headers: {
