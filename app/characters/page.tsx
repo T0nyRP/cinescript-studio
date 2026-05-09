@@ -1,20 +1,19 @@
 "use client"
 
-import { useState, useRef } from "react"
+import { useState, useRef, useCallback } from "react"
 import { motion, AnimatePresence } from "framer-motion"
 import {
   Users, Mic, Star, Plus, X, Check, Save, Clipboard, ClipboardCheck,
   ChevronDown, ChevronUp, Images, Volume2, Merge, Camera, Link2, Upload,
-  AlertCircle, Trash2, CheckSquare, Square
+  AlertCircle, Sparkles, Loader2, CheckSquare, Settings2, SlidersHorizontal
 } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { useCharacters } from "@/hooks/use-data-store"
 import { isSupabaseConfigured } from "@/lib/supabase"
 import { cn } from "@/lib/utils"
-import type { Character, VoiceProfile } from "@/types"
+import type { Character, VoiceProfile, VoiceRecommendation } from "@/types"
 
 // ─── Role colors ──────────────────────────────────────────────────────────────
 
@@ -49,110 +48,438 @@ function getRoleColor(role: string) {
   return "orange"
 }
 
-// ─── Voice Editor Modal ───────────────────────────────────────────────────────
+// ─── Settings slider ──────────────────────────────────────────────────────────
 
-function VoiceEditor({ character, onSave, onClose }: { character: Character; onSave: (voice: VoiceProfile) => void; onClose: () => void }) {
-  const [voice, setVoice] = useState<VoiceProfile>(character.voice ?? {
-    gender: character.voiceStyle.toLowerCase().includes("female") ? "female" : "male",
-    ageRange: character.voiceStyle.toLowerCase().includes("young") ? "young" : "mid",
-    accent: "American",
-    tone: "intense",
-  })
+function SettingSlider({
+  label,
+  hint,
+  value,
+  min,
+  max,
+  recommendedMin,
+  recommendedMax,
+  onChange,
+}: {
+  label: string
+  hint: string
+  value: number
+  min: number
+  max: number
+  recommendedMin: number
+  recommendedMax: number
+  onChange: (v: number) => void
+}) {
+  const recLeft = `${recommendedMin}%`
+  const recWidth = `${recommendedMax - recommendedMin}%`
+  const inRange = value >= recommendedMin && value <= recommendedMax
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-1.5">
+        <div className="flex items-center gap-1.5">
+          <span className="text-xs font-medium text-white/70">{label}</span>
+          <span className={cn("text-xs font-mono", inRange ? "text-green-400" : "text-white/40")}>{value}</span>
+          {inRange && <span className="text-xs text-green-400/60">✓ recommended</span>}
+        </div>
+        <span className="text-xs text-white/25">{hint}</span>
+      </div>
+      <div className="relative h-5 flex items-center">
+        {/* Track */}
+        <div className="absolute w-full h-1.5 bg-white/10 rounded-full" />
+        {/* Recommended range highlight */}
+        <div
+          className="absolute h-1.5 bg-orange-500/25 rounded-full"
+          style={{ left: recLeft, width: recWidth }}
+        />
+        {/* Slider */}
+        <input
+          type="range"
+          min={min}
+          max={max}
+          value={value}
+          onChange={(e) => onChange(Number(e.target.value))}
+          className="relative w-full appearance-none bg-transparent cursor-pointer [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-4 [&::-webkit-slider-thumb]:h-4 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-orange-500 [&::-webkit-slider-thumb]:shadow-lg [&::-webkit-slider-thumb]:cursor-pointer"
+        />
+      </div>
+      <div className="flex justify-between mt-0.5">
+        <span className="text-xs text-white/20">{min}</span>
+        <span className="text-xs text-orange-400/50">rec: {recommendedMin}–{recommendedMax}</span>
+        <span className="text-xs text-white/20">{max}</span>
+      </div>
+    </div>
+  )
+}
+
+// ─── Voice recommendation card ────────────────────────────────────────────────
+
+const RANK_LABELS = ["", "Best Fit", "Great Fit", "Good Fit", "Solid Pick", "Alternative"]
+const RANK_COLORS = ["", "bg-orange-500 text-white", "bg-blue-500/80 text-white", "bg-white/15 text-white/70", "bg-white/10 text-white/60", "bg-white/5 text-white/50"]
+
+function VoiceCard({
+  rec,
+  isSelected,
+  onSelect,
+}: {
+  rec: VoiceRecommendation
+  isSelected: boolean
+  onSelect: () => void
+}) {
   const [copied, setCopied] = useState(false)
 
-  const chatPrompt = `Assign an ElevenLabs voice to ${character.name}. Profile: ${voice.gender ?? ""} voice, ${voice.ageRange ?? ""}, ${voice.accent ?? ""} accent, ${voice.tone ?? ""} tone. Character: ${character.voiceStyle}. Show me options from the voice library.`
-
-  const handleCopy = () => {
-    navigator.clipboard.writeText(chatPrompt)
+  const copyId = (e: React.MouseEvent) => {
+    e.stopPropagation()
+    navigator.clipboard.writeText(rec.id)
     setCopied(true)
-    setTimeout(() => setCopied(false), 2000)
+    setTimeout(() => setCopied(false), 1500)
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm" onClick={onClose}>
+    <motion.div
+      initial={{ opacity: 0, y: 8 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ delay: (rec.rank - 1) * 0.06 }}
+      onClick={onSelect}
+      className={cn(
+        "rounded-xl border p-3.5 cursor-pointer transition-all",
+        isSelected
+          ? "border-orange-500/50 bg-orange-500/10 ring-1 ring-orange-500/30"
+          : "border-white/8 bg-white/3 hover:border-white/15 hover:bg-white/5"
+      )}
+    >
+      <div className="flex items-start gap-3">
+        <div className="flex-shrink-0 flex flex-col items-center gap-1.5 pt-0.5">
+          <div className={cn("text-xs font-bold px-2 py-0.5 rounded-md", RANK_COLORS[rec.rank])}>
+            {RANK_LABELS[rec.rank]}
+          </div>
+          {isSelected && <Check className="w-3.5 h-3.5 text-orange-400" />}
+        </div>
+
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 mb-0.5">
+            <span className="text-sm font-bold text-white">{rec.name}</span>
+            <button
+              onClick={copyId}
+              className="text-xs text-white/25 hover:text-white/60 font-mono transition-colors flex items-center gap-1"
+            >
+              {copied ? <><ClipboardCheck className="w-3 h-3 text-green-400" /><span className="text-green-400">copied</span></> : <><Clipboard className="w-3 h-3" />{rec.id.slice(0, 8)}…</>}
+            </button>
+          </div>
+          <p className="text-xs text-white/50 mb-1.5">{rec.tone}</p>
+          <p className="text-xs text-white/70 leading-relaxed mb-1.5">{rec.whyItFits}</p>
+          <div className="flex flex-wrap gap-1">
+            {rec.characterFeel.split(",").map((f) => (
+              <span key={f} className="text-xs bg-white/5 border border-white/8 px-1.5 py-0.5 rounded-full text-white/50">{f.trim()}</span>
+            ))}
+          </div>
+        </div>
+      </div>
+    </motion.div>
+  )
+}
+
+// ─── Voice Editor Modal ───────────────────────────────────────────────────────
+
+function VoiceEditor({
+  character,
+  onSave,
+  onClose,
+}: {
+  character: Character
+  onSave: (voice: VoiceProfile) => void
+  onClose: () => void
+}) {
+  const [voice, setVoice] = useState<VoiceProfile>(character.voice ?? {
+    stability: 75,
+    similarityBoost: 80,
+    styleExaggeration: 15,
+  })
+  const [recommendations, setRecommendations] = useState<VoiceRecommendation[]>([])
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState("")
+  const [selectedRec, setSelectedRec] = useState<VoiceRecommendation | null>(null)
+  const [tab, setTab] = useState<"pick" | "settings" | "manual">("pick")
+  const hasSearched = recommendations.length > 0
+
+  const handleSearch = useCallback(async () => {
+    setLoading(true)
+    setError("")
+    try {
+      const res = await fetch("/api/recommend-voices", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ character }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error ?? "Unknown error")
+      setRecommendations(data.recommendations)
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Failed to get recommendations")
+    } finally {
+      setLoading(false)
+    }
+  }, [character])
+
+  const handleSelectRec = (rec: VoiceRecommendation) => {
+    setSelectedRec(rec)
+    setVoice((v) => ({
+      ...v,
+      id: rec.id,
+      name: rec.name,
+      tone: rec.tone,
+      provider: "elevenlabs",
+      stability: Math.round((rec.stabilityRange[0] + rec.stabilityRange[1]) / 2),
+      similarityBoost: Math.round((rec.similarityRange[0] + rec.similarityRange[1]) / 2),
+      styleExaggeration: Math.round((rec.styleRange[0] + rec.styleRange[1]) / 2),
+    }))
+    setTab("settings")
+  }
+
+  const stability = voice.stability ?? 75
+  const similarityBoost = voice.similarityBoost ?? 80
+  const styleExaggeration = voice.styleExaggeration ?? 15
+
+  const recStabilityMin = selectedRec?.stabilityRange[0] ?? 65
+  const recStabilityMax = selectedRec?.stabilityRange[1] ?? 80
+  const recSimilarityMin = selectedRec?.similarityRange[0] ?? 75
+  const recSimilarityMax = selectedRec?.similarityRange[1] ?? 90
+  const recStyleMin = selectedRec?.styleRange[0] ?? 10
+  const recStyleMax = selectedRec?.styleRange[1] ?? 25
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm"
+      onClick={onClose}
+    >
       <motion.div
         initial={{ opacity: 0, scale: 0.95, y: 16 }}
         animate={{ opacity: 1, scale: 1, y: 0 }}
         exit={{ opacity: 0, scale: 0.95 }}
-        className="w-full max-w-lg bg-[#111118] rounded-2xl border border-white/10 overflow-hidden"
+        className="w-full max-w-xl bg-[#111118] rounded-2xl border border-white/10 overflow-hidden flex flex-col max-h-[90vh]"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="flex items-center justify-between px-5 py-4 border-b border-white/8">
+        {/* Header */}
+        <div className="flex items-center justify-between px-5 py-4 border-b border-white/8 flex-shrink-0">
           <div>
-            <h3 className="text-sm font-bold text-white">Voice Profile — {character.name}</h3>
-            <p className="text-xs text-white/40 mt-0.5">Set voice attributes, then use the AI chat to assign a specific voice</p>
+            <h3 className="text-sm font-bold text-white flex items-center gap-2">
+              <Mic className="w-4 h-4 text-orange-400" />
+              Voice Casting — {character.name}
+            </h3>
+            <p className="text-xs text-white/40 mt-0.5">{character.voiceStyle}</p>
           </div>
-          <button onClick={onClose} className="w-7 h-7 rounded-lg bg-white/5 hover:bg-white/10 flex items-center justify-center">
+          <button onClick={onClose} className="w-7 h-7 rounded-lg bg-white/5 hover:bg-white/10 flex items-center justify-center flex-shrink-0">
             <X className="w-3.5 h-3.5 text-white/60" />
           </button>
         </div>
 
-        <div className="p-5 space-y-4">
-          <div>
-            <label className="text-xs text-white/40 mb-1.5 block">ElevenLabs Voice ID <span className="text-white/20">(set via AI chat, or enter manually)</span></label>
-            <div className="flex gap-2">
-              <Input
-                value={voice.id ?? ""}
-                onChange={(e) => setVoice({ ...voice, id: e.target.value })}
-                placeholder="e.g. pNInz6obpgDQGcFmaJgB"
-                className="bg-white/5 border-white/10 text-white text-xs h-8 font-mono"
-              />
-              {voice.id && <div className="w-8 h-8 rounded-lg bg-green-500/20 flex items-center justify-center flex-shrink-0"><Check className="w-3.5 h-3.5 text-green-400" /></div>}
-            </div>
-          </div>
-          {voice.id && (
-            <div>
-              <label className="text-xs text-white/40 mb-1.5 block">Voice Name</label>
-              <Input value={voice.name ?? ""} onChange={(e) => setVoice({ ...voice, name: e.target.value })} placeholder="e.g. Adam" className="bg-white/5 border-white/10 text-white text-xs h-8" />
-            </div>
-          )}
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="text-xs text-white/40 mb-1.5 block">Gender</label>
-              <Select value={voice.gender} onValueChange={(v) => setVoice({ ...voice, gender: v as VoiceProfile["gender"] })}>
-                <SelectTrigger className="bg-white/5 border-white/10 text-white text-xs h-8"><SelectValue /></SelectTrigger>
-                <SelectContent className="bg-[#1a1a24] border-white/10">
-                  <SelectItem value="male" className="text-white text-xs">Male</SelectItem>
-                  <SelectItem value="female" className="text-white text-xs">Female</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-            <div>
-              <label className="text-xs text-white/40 mb-1.5 block">Age Range</label>
-              <Select value={voice.ageRange} onValueChange={(v) => setVoice({ ...voice, ageRange: v as VoiceProfile["ageRange"] })}>
-                <SelectTrigger className="bg-white/5 border-white/10 text-white text-xs h-8"><SelectValue /></SelectTrigger>
-                <SelectContent className="bg-[#1a1a24] border-white/10">
-                  <SelectItem value="young" className="text-white text-xs">Young (18–30)</SelectItem>
-                  <SelectItem value="mid" className="text-white text-xs">Mid (30–50)</SelectItem>
-                  <SelectItem value="senior" className="text-white text-xs">Senior (50+)</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-            <div>
-              <label className="text-xs text-white/40 mb-1.5 block">Accent</label>
-              <Input value={voice.accent ?? ""} onChange={(e) => setVoice({ ...voice, accent: e.target.value })} placeholder="American, British, Arabic…" className="bg-white/5 border-white/10 text-white text-xs h-8" />
-            </div>
-            <div>
-              <label className="text-xs text-white/40 mb-1.5 block">Tone</label>
-              <Input value={voice.tone ?? ""} onChange={(e) => setVoice({ ...voice, tone: e.target.value })} placeholder="intense, warm, cold…" className="bg-white/5 border-white/10 text-white text-xs h-8" />
-            </div>
-          </div>
-          <div className="p-3 bg-orange-500/5 border border-orange-500/15 rounded-xl">
-            <p className="text-xs text-white/50 mb-2 flex items-center gap-1.5">
-              <Volume2 className="w-3 h-3 text-orange-400" />
-              <span>To assign a real ElevenLabs voice, copy this prompt into the AI chat:</span>
-            </p>
-            <p className="text-xs text-white/70 font-mono leading-relaxed mb-3 bg-black/30 rounded-lg p-2">{chatPrompt}</p>
-            <Button size="sm" variant="outline" className="w-full border-orange-500/30 text-orange-400 hover:bg-orange-500/10 text-xs h-7 gap-1.5" onClick={handleCopy}>
-              {copied ? <><ClipboardCheck className="w-3 h-3" />Copied!</> : <><Clipboard className="w-3 h-3" />Copy Prompt</>}
-            </Button>
-          </div>
+        {/* Tabs */}
+        <div className="flex border-b border-white/8 flex-shrink-0">
+          {[
+            { id: "pick" as const, label: "AI Recommendations", icon: Sparkles },
+            { id: "settings" as const, label: "Voice Settings", icon: SlidersHorizontal },
+            { id: "manual" as const, label: "Manual Entry", icon: Settings2 },
+          ].map(({ id, label, icon: Icon }) => (
+            <button
+              key={id}
+              onClick={() => setTab(id)}
+              className={cn(
+                "flex items-center gap-1.5 px-4 py-2.5 text-xs font-medium transition-all border-b-2",
+                tab === id
+                  ? "border-orange-500 text-orange-400"
+                  : "border-transparent text-white/40 hover:text-white/60"
+              )}
+            >
+              <Icon className="w-3 h-3" />
+              {label}
+              {id === "pick" && voice.id && <div className="w-1.5 h-1.5 rounded-full bg-green-400 ml-0.5" />}
+            </button>
+          ))}
         </div>
 
-        <div className="px-5 pb-5 flex gap-2">
-          <Button variant="outline" className="flex-1 border-white/15 text-white/60 text-xs h-8" onClick={onClose}>Cancel</Button>
-          <Button className="flex-1 bg-orange-500 hover:bg-orange-600 text-white text-xs h-8 gap-1.5" onClick={() => { onSave(voice); onClose() }}>
-            <Save className="w-3 h-3" />Save Voice Profile
+        {/* Scrollable content */}
+        <div className="overflow-y-auto flex-1 p-5">
+
+          {/* ── TAB: AI Recommendations ── */}
+          {tab === "pick" && (
+            <div className="space-y-4">
+              {!hasSearched && !loading && (
+                <div className="text-center py-6">
+                  <div className="w-14 h-14 rounded-2xl bg-orange-500/10 border border-orange-500/20 flex items-center justify-center mx-auto mb-3">
+                    <Sparkles className="w-7 h-7 text-orange-400" />
+                  </div>
+                  <p className="text-sm font-semibold text-white mb-1">Find the perfect voice</p>
+                  <p className="text-xs text-white/40 max-w-xs mx-auto mb-4">
+                    AI will analyze {character.name}&apos;s profile and rank the best ElevenLabs voices with fit rationale and recommended settings.
+                  </p>
+                  <Button
+                    className="bg-orange-500 hover:bg-orange-600 text-white gap-2"
+                    onClick={handleSearch}
+                  >
+                    <Sparkles className="w-3.5 h-3.5" />
+                    Find Recommended Voices
+                  </Button>
+                </div>
+              )}
+
+              {loading && (
+                <div className="space-y-3">
+                  <div className="flex items-center gap-2 text-xs text-orange-400/80 mb-3">
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    Analyzing {character.name}&apos;s character profile…
+                  </div>
+                  {[1, 2, 3, 4, 5].map((i) => (
+                    <div key={i} className="h-24 rounded-xl bg-white/5 animate-pulse" />
+                  ))}
+                </div>
+              )}
+
+              {error && (
+                <div className="flex items-center gap-2 text-xs text-red-400 bg-red-500/10 border border-red-500/20 rounded-xl p-3">
+                  <AlertCircle className="w-3.5 h-3.5 flex-shrink-0" />
+                  {error}
+                </div>
+              )}
+
+              {hasSearched && !loading && (
+                <>
+                  <div className="flex items-center justify-between">
+                    <p className="text-xs text-white/40">Top voices for <span className="text-white/60">{character.name}</span></p>
+                    <button
+                      onClick={handleSearch}
+                      className="text-xs text-orange-400/70 hover:text-orange-400 transition-colors flex items-center gap-1"
+                    >
+                      <Sparkles className="w-3 h-3" />Re-run
+                    </button>
+                  </div>
+                  <div className="space-y-2">
+                    {recommendations.map((rec) => (
+                      <VoiceCard
+                        key={rec.id}
+                        rec={rec}
+                        isSelected={voice.id === rec.id}
+                        onSelect={() => handleSelectRec(rec)}
+                      />
+                    ))}
+                  </div>
+                </>
+              )}
+            </div>
+          )}
+
+          {/* ── TAB: Voice Settings ── */}
+          {tab === "settings" && (
+            <div className="space-y-5">
+              {voice.id ? (
+                <div className="flex items-center gap-3 p-3 bg-green-500/5 border border-green-500/20 rounded-xl">
+                  <div className="w-8 h-8 rounded-lg bg-green-500/20 flex items-center justify-center flex-shrink-0">
+                    <Check className="w-4 h-4 text-green-400" />
+                  </div>
+                  <div>
+                    <p className="text-sm font-semibold text-white">{voice.name ?? "Voice selected"}</p>
+                    <p className="text-xs text-white/40 font-mono">{voice.id}</p>
+                  </div>
+                </div>
+              ) : (
+                <div className="flex items-center gap-2 text-xs text-yellow-400/80 bg-yellow-500/8 border border-yellow-500/15 rounded-xl p-3">
+                  <AlertCircle className="w-3.5 h-3.5 flex-shrink-0" />
+                  No voice selected — pick one from AI Recommendations or enter manually
+                </div>
+              )}
+
+              <div className="space-y-5">
+                <SettingSlider
+                  label="Stability"
+                  hint="Consistency vs. expressiveness"
+                  value={stability}
+                  min={0}
+                  max={100}
+                  recommendedMin={recStabilityMin}
+                  recommendedMax={recStabilityMax}
+                  onChange={(v) => setVoice({ ...voice, stability: v })}
+                />
+                <SettingSlider
+                  label="Clarity / Similarity"
+                  hint="Precision of voice match"
+                  value={similarityBoost}
+                  min={0}
+                  max={100}
+                  recommendedMin={recSimilarityMin}
+                  recommendedMax={recSimilarityMax}
+                  onChange={(v) => setVoice({ ...voice, similarityBoost: v })}
+                />
+                <SettingSlider
+                  label="Style Exaggeration"
+                  hint="Adds intensity / character"
+                  value={styleExaggeration}
+                  min={0}
+                  max={100}
+                  recommendedMin={recStyleMin}
+                  recommendedMax={recStyleMax}
+                  onChange={(v) => setVoice({ ...voice, styleExaggeration: v })}
+                />
+              </div>
+
+              {selectedRec && (
+                <div className="p-3 bg-white/3 border border-white/8 rounded-xl text-xs text-white/50 leading-relaxed">
+                  <p className="font-medium text-white/70 mb-1">Why these settings for {selectedRec.name}?</p>
+                  {selectedRec.whyItFits}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* ── TAB: Manual Entry ── */}
+          {tab === "manual" && (
+            <div className="space-y-4">
+              <p className="text-xs text-white/40">Enter a voice ID directly if you already know which ElevenLabs voice to use.</p>
+              <div>
+                <label className="text-xs text-white/40 mb-1.5 block">ElevenLabs Voice ID</label>
+                <div className="flex gap-2">
+                  <Input
+                    value={voice.id ?? ""}
+                    onChange={(e) => setVoice({ ...voice, id: e.target.value })}
+                    placeholder="e.g. pNInz6obpgDQGcFmaJgB"
+                    className="bg-white/5 border-white/10 text-white text-xs h-8 font-mono"
+                  />
+                  {voice.id && (
+                    <div className="w-8 h-8 rounded-lg bg-green-500/20 flex items-center justify-center flex-shrink-0">
+                      <Check className="w-3.5 h-3.5 text-green-400" />
+                    </div>
+                  )}
+                </div>
+              </div>
+              {voice.id && (
+                <div>
+                  <label className="text-xs text-white/40 mb-1.5 block">Voice Name <span className="text-white/20">(optional label)</span></label>
+                  <Input
+                    value={voice.name ?? ""}
+                    onChange={(e) => setVoice({ ...voice, name: e.target.value })}
+                    placeholder="e.g. Adam"
+                    className="bg-white/5 border-white/10 text-white text-xs h-8"
+                  />
+                </div>
+              )}
+              <div className="p-3 bg-white/3 border border-white/8 rounded-xl text-xs text-white/50">
+                Find voice IDs at{" "}
+                <a href="https://elevenlabs.io/voice-library" target="_blank" rel="noreferrer" className="text-orange-400 hover:underline">
+                  elevenlabs.io/voice-library
+                </a>
+                {" "}— click any voice → copy the ID from the URL or voice card.
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Footer */}
+        <div className="px-5 py-4 border-t border-white/8 flex gap-2 flex-shrink-0">
+          <Button variant="outline" className="flex-1 border-white/15 text-white/60 text-xs h-8" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button
+            className="flex-1 bg-orange-500 hover:bg-orange-600 text-white text-xs h-8 gap-1.5"
+            onClick={() => { onSave(voice); onClose() }}
+          >
+            <Save className="w-3 h-3" />
+            {voice.id ? `Save — ${voice.name ?? "Voice"}` : "Save Settings"}
           </Button>
         </div>
       </motion.div>
@@ -237,9 +564,8 @@ function AddPhotoModal({
         </div>
 
         <div className="p-5 space-y-4">
-          {/* Upload from device */}
           <div>
-            <label className="text-xs text-white/40 mb-1.5 block flex items-center gap-1.5"><Upload className="w-3 h-3" />Upload from device <span className="text-white/20">(max 4 MB each)</span></label>
+            <label className="text-xs text-white/40 mb-1.5 flex items-center gap-1.5"><Upload className="w-3 h-3" />Upload from device <span className="text-white/20">(max 4 MB each)</span></label>
             <input ref={fileRef} type="file" accept="image/*" multiple className="hidden" onChange={(e) => handleFiles(e.target.files)} />
             <button
               onClick={() => fileRef.current?.click()}
@@ -250,9 +576,8 @@ function AddPhotoModal({
             </button>
           </div>
 
-          {/* URL paste */}
           <div>
-            <label className="text-xs text-white/40 mb-1.5 block flex items-center gap-1.5"><Link2 className="w-3 h-3" />Or paste an image URL</label>
+            <label className="text-xs text-white/40 mb-1.5 flex items-center gap-1.5"><Link2 className="w-3 h-3" />Or paste an image URL</label>
             <div className="flex gap-2">
               <Input
                 value={urlInput}
@@ -267,14 +592,12 @@ function AddPhotoModal({
             </div>
           </div>
 
-          {/* Error */}
           {error && (
             <div className="flex items-center gap-1.5 text-xs text-red-400">
               <AlertCircle className="w-3 h-3" />{error}
             </div>
           )}
 
-          {/* Existing photos */}
           {existing.length > 0 && (
             <div>
               <p className="text-xs text-white/30 mb-2">Already saved ({existing.length})</p>
@@ -291,7 +614,6 @@ function AddPhotoModal({
             </div>
           )}
 
-          {/* New previews */}
           {previews.length > 0 && (
             <div>
               <p className="text-xs text-white/30 mb-2">Adding {previews.length} new photo{previews.length !== 1 ? "s" : ""}</p>
@@ -350,7 +672,6 @@ function MergeModal({
   const primary = selectedChars.find((c) => c.id === primaryId)!
   const toDelete = selected.filter((id) => id !== primaryId)
 
-  // Merge all referenceImages
   const allRefs = Array.from(new Set(
     selectedChars.flatMap((c) => c.referenceImages ?? (c.imageUrl ? [c.imageUrl] : []))
   ))
@@ -473,7 +794,6 @@ function CharacterCard({
         )}
         onClick={mergeMode ? () => onToggleSelect(character.id) : undefined}
       >
-        {/* Merge mode selection indicator */}
         {mergeMode && (
           <div className="absolute top-3 right-3 z-10">
             <div className={cn(
@@ -487,7 +807,6 @@ function CharacterCard({
 
         <div className="p-5">
           <div className="flex items-start gap-4">
-            {/* Reference photo */}
             {refs.length > 0 ? (
               <div className="relative flex-shrink-0">
                 <div className={cn("w-16 h-16 rounded-xl overflow-hidden ring-2", c.ring)}>
@@ -534,7 +853,12 @@ function CharacterCard({
                   {hasVoice ? (
                     <>
                       <p className="text-xs font-semibold text-white truncate">{character.voice?.name ?? "Voice Assigned"}</p>
-                      <p className="text-xs text-white/40 truncate">{[character.voice?.gender, character.voice?.ageRange, character.voice?.accent].filter(Boolean).join(" · ")}</p>
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <p className="text-xs text-white/40 truncate">{[character.voice?.gender, character.voice?.ageRange, character.voice?.accent].filter(Boolean).join(" · ")}</p>
+                        {character.voice?.stability !== undefined && (
+                          <span className="text-xs text-white/25">S:{character.voice.stability} C:{character.voice.similarityBoost} E:{character.voice.styleExaggeration}</span>
+                        )}
+                      </div>
                     </>
                   ) : (
                     <>
@@ -545,7 +869,12 @@ function CharacterCard({
                 </div>
               </div>
               {!mergeMode && (
-                <Button size="sm" variant="outline" className={cn("flex-shrink-0 text-xs h-7 gap-1 ml-2", hasVoice ? "border-green-500/30 text-green-400 hover:bg-green-500/10" : "border-orange-500/30 text-orange-400 hover:bg-orange-500/10")} onClick={(e) => { e.stopPropagation(); setEditingVoice(true) }}>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className={cn("flex-shrink-0 text-xs h-7 gap-1 ml-2", hasVoice ? "border-green-500/30 text-green-400 hover:bg-green-500/10" : "border-orange-500/30 text-orange-400 hover:bg-orange-500/10")}
+                  onClick={(e) => { e.stopPropagation(); setEditingVoice(true) }}
+                >
                   <Mic className="w-3 h-3" />
                   {hasVoice ? "Edit" : "Assign"}
                 </Button>
@@ -564,7 +893,10 @@ function CharacterCard({
                 {refs.length > 0 ? "Edit Photos" : "Add Photos"}
               </button>
               <span className="text-white/15">·</span>
-              <button className="flex items-center gap-1.5 text-xs text-white/30 hover:text-white/60 transition-colors" onClick={() => setExpanded(!expanded)}>
+              <button
+                className="flex items-center gap-1.5 text-xs text-white/30 hover:text-white/60 transition-colors"
+                onClick={() => setExpanded(!expanded)}
+              >
                 {expanded ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
                 {expanded ? "Hide details" : "Show full profile"}
               </button>
@@ -647,16 +979,13 @@ export default function CharactersPage() {
     const primary = characters.find((c) => c.id === primaryId)!
     const others = characters.filter((c) => idsToDelete.includes(c.id))
 
-    // Merge all referenceImages
     const allRefs = Array.from(new Set([
       ...(primary.referenceImages ?? (primary.imageUrl ? [primary.imageUrl] : [])),
       ...others.flatMap((c) => c.referenceImages ?? (c.imageUrl ? [c.imageUrl] : [])),
     ]))
 
-    // Update primary
     await updateCharacter({ ...primary, referenceImages: allRefs })
 
-    // Delete the duplicates
     for (const id of idsToDelete) {
       await removeCharacter(id)
     }
@@ -687,31 +1016,17 @@ export default function CharactersPage() {
             <div className="flex items-center gap-2 flex-shrink-0">
               {mergeMode ? (
                 <>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="border-white/15 text-white/60 text-xs h-8"
-                    onClick={cancelMerge}
-                  >
+                  <Button variant="outline" size="sm" className="border-white/15 text-white/60 text-xs h-8" onClick={cancelMerge}>
                     <X className="w-3 h-3 mr-1" />Cancel
                   </Button>
                   {selectedIds.length >= 2 && (
-                    <Button
-                      size="sm"
-                      className="bg-orange-500 hover:bg-orange-600 text-white text-xs h-8 gap-1.5"
-                      onClick={() => setShowMergeModal(true)}
-                    >
+                    <Button size="sm" className="bg-orange-500 hover:bg-orange-600 text-white text-xs h-8 gap-1.5" onClick={() => setShowMergeModal(true)}>
                       <Merge className="w-3 h-3" />Merge {selectedIds.length} Characters
                     </Button>
                   )}
                 </>
               ) : (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="border-purple-500/30 text-purple-400 hover:bg-purple-500/10 text-xs h-8 gap-1.5"
-                  onClick={() => setMergeMode(true)}
-                >
+                <Button variant="outline" size="sm" className="border-purple-500/30 text-purple-400 hover:bg-purple-500/10 text-xs h-8 gap-1.5" onClick={() => setMergeMode(true)}>
                   <Merge className="w-3 h-3" />Merge Duplicates
                 </Button>
               )}
@@ -720,7 +1035,6 @@ export default function CharactersPage() {
         </div>
       </motion.div>
 
-      {/* Merge mode hint */}
       {mergeMode && (
         <motion.div
           initial={{ opacity: 0, y: -8 }}
@@ -732,7 +1046,6 @@ export default function CharactersPage() {
         </motion.div>
       )}
 
-      {/* Storage indicator */}
       <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.1 }} className="mb-6 flex items-center gap-2 text-xs">
         <div className={cn("flex items-center gap-1.5 px-3 py-1.5 rounded-full border", isSupabaseConfigured ? "bg-green-500/10 border-green-500/20 text-green-400" : "bg-yellow-500/10 border-yellow-500/20 text-yellow-400")}>
           <div className={cn("w-1.5 h-1.5 rounded-full", isSupabaseConfigured ? "bg-green-400" : "bg-yellow-400")} />
@@ -764,27 +1077,6 @@ export default function CharactersPage() {
         </div>
       )}
 
-      {/* Voice instructions */}
-      {!mergeMode && (
-        <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.5 }} className="mt-8 p-5 bg-orange-500/5 border border-orange-500/15 rounded-xl">
-          <div className="flex items-start gap-3">
-            <div className="w-8 h-8 rounded-lg bg-orange-500/20 flex items-center justify-center flex-shrink-0 mt-0.5">
-              <Volume2 className="w-4 h-4 text-orange-400" />
-            </div>
-            <div>
-              <p className="text-sm font-semibold text-white mb-1">How Voice Assignment Works</p>
-              <p className="text-xs text-white/50 leading-relaxed">
-                1. Click <strong className="text-white/70">Assign</strong> on any character to set their voice attributes. <br />
-                2. Copy the generated prompt and paste it into the AI chat — it will show you voice options from the ElevenLabs library. <br />
-                3. Pick a voice. The AI will save the Voice ID back to this character automatically. <br />
-                4. On your next video, characters will speak their scripted lines in their assigned voices.
-              </p>
-            </div>
-          </div>
-        </motion.div>
-      )}
-
-      {/* Merge modal */}
       <AnimatePresence>
         {showMergeModal && (
           <MergeModal

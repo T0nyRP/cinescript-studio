@@ -7,6 +7,22 @@ export interface VoiceProfile {
   tone?: string         // "intense", "warm", "authoritative", "clinical"
   previewUrl?: string   // Audio preview URL
   provider?: "elevenlabs" | "minimax"
+  // ElevenLabs generation settings (0–100 scale)
+  stability?: number          // 65–80 recommended for commanding voices
+  similarityBoost?: number    // 75–90 for sharp, authoritative delivery
+  styleExaggeration?: number  // 10–25 for subtle intensity
+}
+
+export interface VoiceRecommendation {
+  id: string            // ElevenLabs voice ID
+  name: string
+  tone: string          // e.g. "Deep, authoritative, controlled"
+  whyItFits: string     // Short fit rationale
+  characterFeel: string // e.g. "Confident, decisive"
+  rank: number          // 1 = best
+  stabilityRange: [number, number]
+  similarityRange: [number, number]
+  styleRange: [number, number]
 }
 
 export interface Character {
