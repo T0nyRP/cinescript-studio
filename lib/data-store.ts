@@ -11,9 +11,44 @@
  * hadn't yet been synced to Supabase.
  */
 
-import { supabase, isSupabaseConfigured, checkSupabaseHealth, isSupabaseReady } from "@/lib/supabase"
+import { supabase, checkSupabaseHealth, isSupabaseReady } from "@/lib/supabase"
 import { EMBER_CHARACTERS, EMBER_SCENES, DEFAULT_VIDEOS } from "@/lib/default-data"
 import type { Character, Scene, VideoRecord } from "@/types"
+
+// ─────────────────────────────────────────────
+// Per-session back-fill lock
+// ─────────────────────────────────────────────
+// Tracks IDs that have been attempted for back-fill this session so we
+// never retry a failing upsert on every page load — one attempt per session.
+const _backfillAttempted = {
+  characters: new Set<string>(),
+  scenes: new Set<string>(),
+}
+
+// Once we see a schema error (400) we disable writes for the rest of the session
+// so we don't spam the console, and log the SQL fix exactly once.
+let _schemaErrorLogged = false
+
+function handleSchemaError(table: string, error: { code?: string; message?: string }) {
+  const msg = error.message ?? ""
+  const isSchema =
+    msg.toLowerCase().includes("column") ||
+    msg.toLowerCase().includes("schema") ||
+    msg.toLowerCase().includes("does not exist") ||
+    error.code === "42703" // PostgreSQL: undefined_column
+  if (isSchema && !_schemaErrorLogged) {
+    _schemaErrorLogged = true
+    console.error(
+      `[CineScript] Supabase schema mismatch on table "${table}" — run the following SQL in your Supabase SQL editor:\n\n` +
+      `  ALTER TABLE characters ADD COLUMN IF NOT EXISTS manuscript_source TEXT;\n` +
+      `  ALTER TABLE scenes    ADD COLUMN IF NOT EXISTS manuscript_source TEXT;\n\n` +
+      `  Or drop and recreate the tables using the schema in lib/supabase.ts.\n` +
+      `  Your data is safe in localStorage.`
+    )
+    return true
+  }
+  return false
+}
 
 // ─────────────────────────────────────────────
 // localStorage helpers
@@ -68,15 +103,24 @@ export async function getCharacters(): Promise<Character[]> {
         lsSet("ember_characters", merged)
 
         // Back-fill Supabase with any local-only characters it's missing
+        // — skip IDs already attempted this session to avoid retry loops
         const remoteIds = new Set(remoteChars.map((c) => c.id))
-        const localOnly = localChars.filter((c) => !remoteIds.has(c.id))
+        const localOnly = localChars.filter(
+          (c) => !remoteIds.has(c.id) && !_backfillAttempted.characters.has(c.id)
+        )
         if (localOnly.length > 0) {
+          localOnly.forEach((c) => _backfillAttempted.characters.add(c.id))
           supabase
             .from("characters")
             .upsert(localOnly.map(characterToRow))
             .then(({ error: e }) => {
-              if (e) console.warn("Supabase back-fill characters error:", e.message)
-              else console.log(`Back-filled ${localOnly.length} local-only characters to Supabase`)
+              if (e) {
+                if (!handleSchemaError("characters", e)) {
+                  console.warn("Supabase back-fill characters error:", e.message)
+                }
+              } else {
+                console.log(`Back-filled ${localOnly.length} local-only characters to Supabase`)
+              }
             })
         }
 
@@ -99,10 +143,14 @@ export async function saveCharacter(char: Character): Promise<void> {
   lsSet("ember_characters", updated)
 
   // 2. Background-sync to Supabase (non-blocking, errors logged not thrown)
-  if (isSupabaseReady() && supabase) {
+  if (isSupabaseReady() && supabase && !_schemaErrorLogged) {
     try {
       const { error } = await supabase.from("characters").upsert(characterToRow(char))
-      if (error) console.warn("Supabase saveCharacter error (data saved to localStorage):", error.message)
+      if (error) {
+        if (!handleSchemaError("characters", error)) {
+          console.warn("Supabase saveCharacter error (data saved to localStorage):", error.message)
+        }
+      }
     } catch (e) {
       console.warn("Supabase saveCharacter exception:", e)
     }
@@ -114,10 +162,14 @@ export async function saveAllCharacters(chars: Character[]): Promise<void> {
   lsSet("ember_characters", chars)
 
   // 2. Sync to Supabase
-  if (isSupabaseReady() && supabase) {
+  if (isSupabaseReady() && supabase && !_schemaErrorLogged) {
     try {
       const { error } = await supabase.from("characters").upsert(chars.map(characterToRow))
-      if (error) console.warn("Supabase saveAllCharacters error:", error.message)
+      if (error) {
+        if (!handleSchemaError("characters", error)) {
+          console.warn("Supabase saveAllCharacters error:", error.message)
+        }
+      }
     } catch (e) {
       console.warn("Supabase saveAllCharacters exception:", e)
     }
@@ -190,15 +242,24 @@ export async function getScenes(): Promise<Scene[]> {
         lsSet("ember_scenes", merged)
 
         // Back-fill Supabase with any local-only scenes it's missing
+        // — skip IDs already attempted this session to avoid retry loops on schema errors
         const remoteIds = new Set(remoteScenes.map((s) => s.id))
-        const localOnly = localScenes.filter((s) => !remoteIds.has(s.id))
+        const localOnly = localScenes.filter(
+          (s) => !remoteIds.has(s.id) && !_backfillAttempted.scenes.has(s.id)
+        )
         if (localOnly.length > 0) {
+          localOnly.forEach((s) => _backfillAttempted.scenes.add(s.id))
           supabase
             .from("scenes")
             .upsert(localOnly.map(sceneToRow))
             .then(({ error: e }) => {
-              if (e) console.warn("Supabase back-fill scenes error:", e.message)
-              else console.log(`Back-filled ${localOnly.length} local-only scenes to Supabase`)
+              if (e) {
+                if (!handleSchemaError("scenes", e)) {
+                  console.warn("Supabase back-fill scenes error:", e.message)
+                }
+              } else {
+                console.log(`Back-filled ${localOnly.length} local-only scenes to Supabase`)
+              }
             })
         }
 
@@ -221,10 +282,14 @@ export async function saveScene(scene: Scene): Promise<void> {
   lsSet("ember_scenes", updated)
 
   // 2. Background-sync to Supabase
-  if (isSupabaseReady() && supabase) {
+  if (isSupabaseReady() && supabase && !_schemaErrorLogged) {
     try {
       const { error } = await supabase.from("scenes").upsert(sceneToRow(scene))
-      if (error) console.warn("Supabase saveScene error (saved to localStorage):", error.message)
+      if (error) {
+        if (!handleSchemaError("scenes", error)) {
+          console.warn("Supabase saveScene error (saved to localStorage):", error.message)
+        }
+      }
     } catch (e) {
       console.warn("Supabase saveScene exception:", e)
     }
@@ -259,7 +324,7 @@ export async function replaceCharacterIdsInScenes(
 
   lsSet("ember_scenes", updated)
 
-  if (isSupabaseReady() && supabase) {
+  if (isSupabaseReady() && supabase && !_schemaErrorLogged) {
     const dirty = updated.filter((scene) => {
       const orig = all.find((s) => s.id === scene.id)
       return orig && orig.characters !== scene.characters
@@ -269,7 +334,11 @@ export async function replaceCharacterIdsInScenes(
         .from("scenes")
         .upsert(sceneToRow(scene))
         .then(({ error: e }) => {
-          if (e) console.warn("Supabase replaceCharacterIds error:", e.message)
+          if (e) {
+            if (!handleSchemaError("scenes", e)) {
+              console.warn("Supabase replaceCharacterIds error:", e.message)
+            }
+          }
         })
     }
   }
@@ -290,7 +359,7 @@ function sceneToRow(s: Scene) {
     location: s.location,
     characters: s.characters,
     shot_breakdown: s.shotBreakdown ?? null,
-    manuscript_source: s.manuscriptSource ?? null,   // ← was missing, causing grouping loss
+    manuscript_source: s.manuscriptSource ?? null,
     created_at: new Date().toISOString(),
   }
 }
@@ -309,7 +378,7 @@ function rowToScene(row: Record<string, unknown>): Scene {
     location: row.location as string,
     characters: row.characters as string[],
     shotBreakdown: row.shot_breakdown as Scene["shotBreakdown"],
-    manuscriptSource: row.manuscript_source as string | undefined,  // ← was missing
+    manuscriptSource: row.manuscript_source as string | undefined,
   }
 }
 
