@@ -117,6 +117,7 @@ interface ShotGenState {
   description: string
   imagePhase: Phase
   imageUrl?: string
+  imageRequestId?: string   // runId while polling for image
   imageError?: string
   videoPhase: Phase
   videoUrl?: string
@@ -165,7 +166,12 @@ function ShotProgressCard({ state, onRetry }: { state: ShotGenState; onRetry: ()
           </p>
           <div className="w-full aspect-video rounded-lg bg-white/5 overflow-hidden flex items-center justify-center relative">
             {state.imagePhase === "pending" && <div className="text-white/15 text-xs">waiting…</div>}
-            {state.imagePhase === "loading" && <Loader2 className="w-5 h-5 text-orange-400 animate-spin" />}
+            {(state.imagePhase === "loading" || state.imagePhase === "polling") && (
+              <div className="flex flex-col items-center gap-2">
+                <Loader2 className="w-5 h-5 text-orange-400 animate-spin" />
+                <p className="text-xs text-white/30">{state.imagePhase === "loading" ? "Submitting…" : "Generating…"}</p>
+              </div>
+            )}
             {state.imagePhase === "error" && (
               <div className="flex flex-col items-center gap-1 p-2 text-center">
                 <X className="w-4 h-4 text-red-400" />
@@ -263,7 +269,39 @@ function GeneratePageInner() {
     setShotStates((prev) => prev.map((s) => s.shotId === shotId ? { ...s, ...patch } : s))
   }, [])
 
-  // ── Poll Galaxy AI for video status ──
+  // ── Poll Galaxy AI for image status ──
+  const pollImage = useCallback(
+    (shotId: string, requestId: string): Promise<string> => {
+      return new Promise((resolve, reject) => {
+        const attempt = async () => {
+          if (abortRef.current) { reject(new Error("Aborted")); return }
+          try {
+            const res = await fetch("/api/poll-galaxy-status", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ requestId, type: "image" }),
+            })
+            const data = await res.json() as { status: string; imageUrl?: string; error?: string }
+
+            if (data.status === "completed" && data.imageUrl) {
+              resolve(data.imageUrl)
+            } else if (data.status === "failed" || data.status === "error") {
+              reject(new Error(data.error ?? "Image generation failed"))
+            } else {
+              // Still processing — poll again in 8 seconds
+              pollingRef.current[`img_${shotId}`] = setTimeout(attempt, 8000)
+            }
+          } catch (err) {
+            reject(err)
+          }
+        }
+        attempt()
+      })
+    },
+    []
+  )
+
+    // ── Poll Galaxy AI for video status ──
   const pollVideo = useCallback(
     (shotId: string, requestId: string, model: string): Promise<void> => {
       return new Promise((resolve) => {
@@ -312,7 +350,7 @@ function GeneratePageInner() {
         .filter(Boolean)
         .join(", ")
 
-      // ── Step 1: Generate image ──
+      // ── Step 1: Submit image job (async — GPT Image 2 takes 60-90s) ──
       updateShot(shot.id, { imagePhase: "loading" })
       try {
         const imgRes = await fetch("/api/generate-shot-image", {
@@ -324,20 +362,27 @@ function GeneratePageInner() {
             characterDesc,
           }),
         })
-        const imgData = await imgRes.json() as { imageUrl?: string; error?: string }
-        if (!imgRes.ok || imgData.error) throw new Error(imgData.error || "Image generation failed")
-        if (!imgData.imageUrl) throw new Error("No image URL returned")
+        const imgData = await imgRes.json() as { requestId?: string; model?: string; error?: string }
+        if (!imgRes.ok || imgData.error) throw new Error(imgData.error || "Image submission failed")
+        if (!imgData.requestId) throw new Error("No requestId from Galaxy AI")
 
-        updateShot(shot.id, { imagePhase: "done", imageUrl: imgData.imageUrl, videoPhase: "loading" })
+        // Mark image as polling
+        updateShot(shot.id, { imagePhase: "polling", imageRequestId: imgData.requestId })
 
         if (abortRef.current) return
 
-        // ── Step 2: Submit video job ──
+        // ── Step 2: Poll until image is ready ──
+        const imageUrl = await pollImage(shot.id, imgData.requestId)
+        updateShot(shot.id, { imagePhase: "done", imageUrl, videoPhase: "loading" })
+
+        if (abortRef.current) return
+
+        // ── Step 3: Submit video job ──
         const vidRes = await fetch("/api/generate-shot-video", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            imageUrl: imgData.imageUrl,
+            imageUrl,
             prompt: (shot as Shot & { prompt?: string }).prompt || shot.description,
             duration: shot.duration ?? 10,
           }),
@@ -352,22 +397,21 @@ function GeneratePageInner() {
           videoModel: vidData.model,
         })
 
-        // ── Step 3: Poll until video done ──
+        // ── Step 4: Poll until video done ──
         await pollVideo(shot.id, vidData.requestId, vidData.model ?? "")
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err)
-        // Use functional update via setShotStates to get current state
         setShotStates((prev) => prev.map((s) => {
           if (s.shotId !== shot.id) return s
-          const imagePhase: Phase = s.imagePhase === "loading" ? "error" : s.imagePhase
-          const imageError = s.imagePhase === "loading" ? msg : s.imageError
+          const imagePhase: Phase = s.imagePhase === "loading" || s.imagePhase === "polling" ? "error" : s.imagePhase
+          const imageError = imagePhase === "error" && s.imagePhase !== "done" ? msg : s.imageError
           const videoPhase: Phase = s.videoPhase === "loading" || s.videoPhase === "polling" ? "error" : s.videoPhase
           const videoError = s.videoPhase === "loading" || s.videoPhase === "polling" ? msg : s.videoError
           return { ...s, imagePhase, imageError, videoPhase, videoError }
         }))
       }
     },
-    [sceneCharacters, scene, selectedStyle, updateShot, pollVideo]
+    [sceneCharacters, scene, selectedStyle, updateShot, pollImage, pollVideo]
   )
 
   // ── Start full pipeline ──
@@ -403,6 +447,7 @@ function GeneratePageInner() {
       updateShot(shot.id, {
         imagePhase: "pending",
         imageUrl: undefined,
+        imageRequestId: undefined,
         imageError: undefined,
         videoPhase: "pending",
         videoUrl: undefined,
