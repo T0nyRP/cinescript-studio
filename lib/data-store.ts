@@ -11,7 +11,7 @@
  * hadn't yet been synced to Supabase.
  */
 
-import { supabase, checkSupabaseHealth, isSupabaseReady } from "@/lib/supabase"
+import { supabase, checkSupabaseHealth, isSupabaseReady, markSupabaseUnhealthy } from "@/lib/supabase"
 import { EMBER_CHARACTERS, EMBER_SCENES, DEFAULT_VIDEOS } from "@/lib/default-data"
 import type { Character, Scene, VideoRecord } from "@/types"
 
@@ -126,9 +126,9 @@ export async function getCharacters(): Promise<Character[]> {
 
         return merged
       }
-      if (error) console.warn("Supabase getCharacters error:", error.message)
+      if (error) { markSupabaseUnhealthy(`getCharacters failed: ${error.message}`); }
     } catch (e) {
-      console.warn("Supabase getCharacters exception:", e)
+      markSupabaseUnhealthy(`getCharacters exception: ${e instanceof Error ? e.message : String(e)}`)
     }
   }
 
@@ -265,9 +265,9 @@ export async function getScenes(): Promise<Scene[]> {
 
         return merged
       }
-      if (error) console.warn("Supabase getScenes error:", error.message)
+      if (error) { markSupabaseUnhealthy(`getScenes failed: ${error.message}`); }
     } catch (e) {
-      console.warn("Supabase getScenes exception:", e)
+      markSupabaseUnhealthy(`getScenes exception: ${e instanceof Error ? e.message : String(e)}`)
     }
   }
 
@@ -397,9 +397,9 @@ export async function getVideos(): Promise<VideoRecord[]> {
         lsSet("ember_videos", merged)
         return merged
       }
-      if (error) console.warn("Supabase getVideos error:", error.message)
+      if (error) { markSupabaseUnhealthy(`getVideos failed: ${error.message}`); }
     } catch (e) {
-      console.warn("Supabase getVideos exception:", e)
+      markSupabaseUnhealthy(`getVideos exception: ${e instanceof Error ? e.message : String(e)}`)
     }
   }
 
