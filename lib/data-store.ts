@@ -4,10 +4,11 @@
  * STORAGE STRATEGY:
  * - localStorage is ALWAYS written first (instant, never fails silently)
  * - Supabase is synced in the background when configured
- * - Reads prefer Supabase when available, fall back to localStorage
+ * - Reads MERGE localStorage + Supabase (union by ID, Supabase wins for conflicts)
  *
- * This prevents the silent-data-loss bug where a Supabase upsert error
- * (e.g. wrong schema, RLS block) would cause new data to disappear.
+ * This prevents the data-loss bug where getX() would overwrite localStorage
+ * with stale Supabase data, nuking any newly-extracted characters/scenes that
+ * hadn't yet been synced to Supabase.
  */
 
 import { supabase, isSupabaseConfigured } from "@/lib/supabase"
@@ -39,26 +40,55 @@ function lsSet<T>(key: string, value: T) {
 }
 
 // ─────────────────────────────────────────────
+// Merge helper — union by ID, remote wins for conflicts
+// ─────────────────────────────────────────────
+function mergeById<T extends { id: string }>(local: T[], remote: T[]): T[] {
+  const map = new Map<string, T>()
+  // Local first (establishes order and captures local-only items)
+  local.forEach((item) => map.set(item.id, item))
+  // Remote overwrites matching IDs (Supabase is source of truth for existing records)
+  remote.forEach((item) => map.set(item.id, item))
+  return Array.from(map.values())
+}
+
+// ─────────────────────────────────────────────
 // Characters
 // ─────────────────────────────────────────────
 export async function getCharacters(): Promise<Character[]> {
-  // Try Supabase first if configured
+  // Always read localStorage first — it has the freshest local writes
+  const localChars = lsGet<Character[]>("ember_characters", EMBER_CHARACTERS)
+
   if (isSupabaseConfigured && supabase) {
     try {
       const { data, error } = await supabase.from("characters").select("*").order("created_at")
-      if (!error && data && data.length > 0) {
-        const chars = data.map(rowToCharacter)
-        // Keep localStorage in sync with Supabase
-        lsSet("ember_characters", chars)
-        return chars
+      if (!error && data) {
+        const remoteChars = data.map(rowToCharacter)
+        // Merge: union by ID. Remote wins for existing IDs, local-only items preserved.
+        const merged = mergeById(localChars, remoteChars)
+        lsSet("ember_characters", merged)
+
+        // Back-fill Supabase with any local-only characters it's missing
+        const remoteIds = new Set(remoteChars.map((c) => c.id))
+        const localOnly = localChars.filter((c) => !remoteIds.has(c.id))
+        if (localOnly.length > 0) {
+          supabase
+            .from("characters")
+            .upsert(localOnly.map(characterToRow))
+            .then(({ error: e }) => {
+              if (e) console.warn("Supabase back-fill characters error:", e.message)
+              else console.log(`Back-filled ${localOnly.length} local-only characters to Supabase`)
+            })
+        }
+
+        return merged
       }
       if (error) console.warn("Supabase getCharacters error:", error.message)
     } catch (e) {
       console.warn("Supabase getCharacters exception:", e)
     }
   }
-  // Always fall back to localStorage
-  return lsGet<Character[]>("ember_characters", EMBER_CHARACTERS)
+
+  return localChars
 }
 
 export async function saveCharacter(char: Character): Promise<void> {
@@ -109,15 +139,6 @@ export async function deleteCharacter(id: string): Promise<void> {
   }
 }
 
-async function seedCharacters() {
-  if (!supabase) return
-  try {
-    await supabase.from("characters").upsert(EMBER_CHARACTERS.map(characterToRow))
-  } catch (e) {
-    console.warn("Supabase seedCharacters failed:", e)
-  }
-}
-
 function characterToRow(c: Character) {
   return {
     id: c.id,
@@ -156,20 +177,40 @@ function rowToCharacter(row: Record<string, unknown>): Character {
 // Scenes
 // ─────────────────────────────────────────────
 export async function getScenes(): Promise<Scene[]> {
+  // Always read localStorage first
+  const localScenes = lsGet<Scene[]>("ember_scenes", EMBER_SCENES)
+
   if (isSupabaseConfigured && supabase) {
     try {
       const { data, error } = await supabase.from("scenes").select("*").order("created_at")
-      if (!error && data && data.length > 0) {
-        const scenes = data.map(rowToScene)
-        lsSet("ember_scenes", scenes)
-        return scenes
+      if (!error && data) {
+        const remoteScenes = data.map(rowToScene)
+        // Merge: union by ID. Remote wins for existing IDs, local-only items preserved.
+        const merged = mergeById(localScenes, remoteScenes)
+        lsSet("ember_scenes", merged)
+
+        // Back-fill Supabase with any local-only scenes it's missing
+        const remoteIds = new Set(remoteScenes.map((s) => s.id))
+        const localOnly = localScenes.filter((s) => !remoteIds.has(s.id))
+        if (localOnly.length > 0) {
+          supabase
+            .from("scenes")
+            .upsert(localOnly.map(sceneToRow))
+            .then(({ error: e }) => {
+              if (e) console.warn("Supabase back-fill scenes error:", e.message)
+              else console.log(`Back-filled ${localOnly.length} local-only scenes to Supabase`)
+            })
+        }
+
+        return merged
       }
       if (error) console.warn("Supabase getScenes error:", error.message)
     } catch (e) {
       console.warn("Supabase getScenes exception:", e)
     }
   }
-  return lsGet<Scene[]>("ember_scenes", EMBER_SCENES)
+
+  return localScenes
 }
 
 export async function saveScene(scene: Scene): Promise<void> {
@@ -190,15 +231,6 @@ export async function saveScene(scene: Scene): Promise<void> {
   }
 }
 
-async function seedScenes() {
-  if (!supabase) return
-  try {
-    await supabase.from("scenes").upsert(EMBER_SCENES.map(sceneToRow))
-  } catch (e) {
-    console.warn("Supabase seedScenes failed:", e)
-  }
-}
-
 function sceneToRow(s: Scene) {
   return {
     id: s.id,
@@ -213,6 +245,7 @@ function sceneToRow(s: Scene) {
     location: s.location,
     characters: s.characters,
     shot_breakdown: s.shotBreakdown ?? null,
+    manuscript_source: s.manuscriptSource ?? null,   // ← was missing, causing grouping loss
     created_at: new Date().toISOString(),
   }
 }
@@ -231,6 +264,7 @@ function rowToScene(row: Record<string, unknown>): Scene {
     location: row.location as string,
     characters: row.characters as string[],
     shotBreakdown: row.shot_breakdown as Scene["shotBreakdown"],
+    manuscriptSource: row.manuscript_source as string | undefined,  // ← was missing
   }
 }
 
@@ -238,20 +272,24 @@ function rowToScene(row: Record<string, unknown>): Scene {
 // Videos
 // ─────────────────────────────────────────────
 export async function getVideos(): Promise<VideoRecord[]> {
+  const localVideos = lsGet<VideoRecord[]>("ember_videos", DEFAULT_VIDEOS)
+
   if (isSupabaseConfigured && supabase) {
     try {
       const { data, error } = await supabase.from("videos").select("*").order("generated_at", { ascending: false })
-      if (!error && data && data.length > 0) {
-        const videos = data.map(rowToVideo)
-        lsSet("ember_videos", videos)
-        return videos
+      if (!error && data) {
+        const remoteVideos = data.map(rowToVideo)
+        const merged = mergeById(localVideos, remoteVideos)
+        lsSet("ember_videos", merged)
+        return merged
       }
       if (error) console.warn("Supabase getVideos error:", error.message)
     } catch (e) {
       console.warn("Supabase getVideos exception:", e)
     }
   }
-  return lsGet<VideoRecord[]>("ember_videos", DEFAULT_VIDEOS)
+
+  return localVideos
 }
 
 export async function addVideo(video: VideoRecord): Promise<void> {
