@@ -11,7 +11,7 @@
  * hadn't yet been synced to Supabase.
  */
 
-import { supabase, isSupabaseConfigured } from "@/lib/supabase"
+import { supabase, isSupabaseConfigured, checkSupabaseHealth, isSupabaseReady } from "@/lib/supabase"
 import { EMBER_CHARACTERS, EMBER_SCENES, DEFAULT_VIDEOS } from "@/lib/default-data"
 import type { Character, Scene, VideoRecord } from "@/types"
 
@@ -58,7 +58,7 @@ export async function getCharacters(): Promise<Character[]> {
   // Always read localStorage first — it has the freshest local writes
   const localChars = lsGet<Character[]>("ember_characters", EMBER_CHARACTERS)
 
-  if (isSupabaseConfigured && supabase) {
+  if ((await checkSupabaseHealth()) && supabase) {
     try {
       const { data, error } = await supabase.from("characters").select("*").order("created_at")
       if (!error && data) {
@@ -99,7 +99,7 @@ export async function saveCharacter(char: Character): Promise<void> {
   lsSet("ember_characters", updated)
 
   // 2. Background-sync to Supabase (non-blocking, errors logged not thrown)
-  if (isSupabaseConfigured && supabase) {
+  if (isSupabaseReady() && supabase) {
     try {
       const { error } = await supabase.from("characters").upsert(characterToRow(char))
       if (error) console.warn("Supabase saveCharacter error (data saved to localStorage):", error.message)
@@ -114,7 +114,7 @@ export async function saveAllCharacters(chars: Character[]): Promise<void> {
   lsSet("ember_characters", chars)
 
   // 2. Sync to Supabase
-  if (isSupabaseConfigured && supabase) {
+  if (isSupabaseReady() && supabase) {
     try {
       const { error } = await supabase.from("characters").upsert(chars.map(characterToRow))
       if (error) console.warn("Supabase saveAllCharacters error:", error.message)
@@ -129,7 +129,7 @@ export async function deleteCharacter(id: string): Promise<void> {
   const updated = all.filter((c) => c.id !== id)
   lsSet("ember_characters", updated)
 
-  if (isSupabaseConfigured && supabase) {
+  if (isSupabaseReady() && supabase) {
     try {
       const { error } = await supabase.from("characters").delete().eq("id", id)
       if (error) console.warn("Supabase deleteCharacter error:", error.message)
@@ -180,7 +180,7 @@ export async function getScenes(): Promise<Scene[]> {
   // Always read localStorage first
   const localScenes = lsGet<Scene[]>("ember_scenes", EMBER_SCENES)
 
-  if (isSupabaseConfigured && supabase) {
+  if ((await checkSupabaseHealth()) && supabase) {
     try {
       const { data, error } = await supabase.from("scenes").select("*").order("created_at")
       if (!error && data) {
@@ -221,7 +221,7 @@ export async function saveScene(scene: Scene): Promise<void> {
   lsSet("ember_scenes", updated)
 
   // 2. Background-sync to Supabase
-  if (isSupabaseConfigured && supabase) {
+  if (isSupabaseReady() && supabase) {
     try {
       const { error } = await supabase.from("scenes").upsert(sceneToRow(scene))
       if (error) console.warn("Supabase saveScene error (saved to localStorage):", error.message)
@@ -259,7 +259,7 @@ export async function replaceCharacterIdsInScenes(
 
   lsSet("ember_scenes", updated)
 
-  if (isSupabaseConfigured && supabase) {
+  if (isSupabaseReady() && supabase) {
     const dirty = updated.filter((scene) => {
       const orig = all.find((s) => s.id === scene.id)
       return orig && orig.characters !== scene.characters
@@ -319,7 +319,7 @@ function rowToScene(row: Record<string, unknown>): Scene {
 export async function getVideos(): Promise<VideoRecord[]> {
   const localVideos = lsGet<VideoRecord[]>("ember_videos", DEFAULT_VIDEOS)
 
-  if (isSupabaseConfigured && supabase) {
+  if ((await checkSupabaseHealth()) && supabase) {
     try {
       const { data, error } = await supabase.from("videos").select("*").order("generated_at", { ascending: false })
       if (!error && data) {
@@ -343,7 +343,7 @@ export async function addVideo(video: VideoRecord): Promise<void> {
   lsSet("ember_videos", [video, ...all.filter((v) => v.id !== video.id)])
 
   // 2. Sync to Supabase
-  if (isSupabaseConfigured && supabase) {
+  if (isSupabaseReady() && supabase) {
     try {
       const { error } = await supabase.from("videos").upsert(videoToRow(video))
       if (error) console.warn("Supabase addVideo error:", error.message)
