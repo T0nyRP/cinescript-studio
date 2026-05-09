@@ -500,49 +500,64 @@ function AddPhotoModal({
 }) {
   const [urlInput, setUrlInput] = useState("")
   const [previews, setPreviews] = useState<string[]>([])
+  const [existingPhotos, setExistingPhotos] = useState<string[]>(
+    character.referenceImages ?? (character.imageUrl ? [character.imageUrl] : [])
+  )
   const [error, setError] = useState("")
   const [uploading, setUploading] = useState(false)
   const fileRef = useRef<HTMLInputElement>(null)
-
-  const existing = character.referenceImages ?? (character.imageUrl ? [character.imageUrl] : [])
 
   const addUrl = () => {
     const trimmed = urlInput.trim()
     if (!trimmed) return
     try { new URL(trimmed) } catch { setError("Invalid URL — must start with https://"); return }
-    if (previews.includes(trimmed) || existing.includes(trimmed)) { setError("Already added"); return }
+    if (previews.includes(trimmed) || existingPhotos.includes(trimmed)) { setError("Already added"); return }
     setPreviews((p) => [...p, trimmed])
     setUrlInput("")
     setError("")
   }
 
   const handleFiles = (files: FileList | null) => {
-    if (!files) return
+    if (!files || files.length === 0) return
     setUploading(true)
     setError("")
-    const readers: Promise<string>[] = []
+    const readers: Promise<string | null>[] = []
     Array.from(files).forEach((file) => {
       if (!file.type.startsWith("image/")) { setError("Only image files accepted"); return }
       if (file.size > 4 * 1024 * 1024) { setError(`${file.name} is over 4 MB — try a smaller file`); return }
-      readers.push(new Promise((resolve) => {
+      readers.push(new Promise((resolve, reject) => {
         const fr = new FileReader()
         fr.onload = (e) => resolve(e.target?.result as string)
+        fr.onerror = () => reject(new Error(`Failed to read ${file.name}`))
         fr.readAsDataURL(file)
       }))
     })
-    Promise.all(readers).then((dataUrls) => {
-      setPreviews((p) => [...p, ...dataUrls])
+    if (readers.length === 0) { setUploading(false); return }
+    Promise.allSettled(readers).then((results) => {
+      const successful = results
+        .filter((r): r is PromiseFulfilledResult<string> => r.status === "fulfilled" && r.value !== null)
+        .map((r) => r.value)
+      const failed = results.filter((r) => r.status === "rejected").length
+      if (failed > 0) setError(`${failed} file(s) couldn't be read — try again`)
+      if (successful.length > 0) {
+        setPreviews((p) => [...p, ...successful])
+        setError("")
+      }
       setUploading(false)
+      // Reset input so the same file can be re-selected if needed
+      if (fileRef.current) fileRef.current.value = ""
     })
   }
 
   const removePreview = (i: number) => setPreviews((p) => p.filter((_, idx) => idx !== i))
+  const removeExisting = (i: number) => setExistingPhotos((p) => p.filter((_, idx) => idx !== i))
 
   const handleSave = () => {
-    if (previews.length === 0) { onClose(); return }
-    onSave([...existing, ...previews])
+    onSave([...existingPhotos, ...previews])
     onClose()
   }
+
+  const totalPhotos = existingPhotos.length + previews.length
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm" onClick={onClose}>
@@ -555,7 +570,7 @@ function AddPhotoModal({
       >
         <div className="flex items-center justify-between px-5 py-4 border-b border-white/8">
           <div>
-            <h3 className="text-sm font-bold text-white">Add Reference Photos — {character.name}</h3>
+            <h3 className="text-sm font-bold text-white">Reference Photos — {character.name}</h3>
             <p className="text-xs text-white/40 mt-0.5">These photos keep the character visually consistent across shots</p>
           </div>
           <button onClick={onClose} className="w-7 h-7 rounded-lg bg-white/5 hover:bg-white/10 flex items-center justify-center">
@@ -598,16 +613,22 @@ function AddPhotoModal({
             </div>
           )}
 
-          {existing.length > 0 && (
+          {existingPhotos.length > 0 && (
             <div>
-              <p className="text-xs text-white/30 mb-2">Already saved ({existing.length})</p>
+              <p className="text-xs text-white/30 mb-2">Saved photos ({existingPhotos.length})</p>
               <div className="flex flex-wrap gap-2">
-                {existing.map((url, i) => (
-                  <div key={i} className="w-14 h-14 rounded-lg overflow-hidden ring-1 ring-green-500/30 relative">
-                    <img src={url} alt={`Existing ${i + 1}`} className="w-full h-full object-cover" />
-                    <div className="absolute inset-0 flex items-center justify-center bg-green-500/10">
-                      <Check className="w-3.5 h-3.5 text-green-400" />
+                {existingPhotos.map((url, i) => (
+                  <div key={i} className="relative group">
+                    <div className="w-14 h-14 rounded-lg overflow-hidden ring-1 ring-green-500/30">
+                      <img src={url} alt={`Saved ${i + 1}`} className="w-full h-full object-cover" />
                     </div>
+                    <button
+                      onClick={() => removeExisting(i)}
+                      className="absolute -top-1.5 -right-1.5 w-4 h-4 bg-red-500 rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+                      title="Remove"
+                    >
+                      <X className="w-2.5 h-2.5 text-white" />
+                    </button>
                   </div>
                 ))}
               </div>
@@ -616,7 +637,7 @@ function AddPhotoModal({
 
           {previews.length > 0 && (
             <div>
-              <p className="text-xs text-white/30 mb-2">Adding {previews.length} new photo{previews.length !== 1 ? "s" : ""}</p>
+              <p className="text-xs text-white/30 mb-2">New photos to add ({previews.length})</p>
               <div className="flex flex-wrap gap-2">
                 {previews.map((url, i) => (
                   <div key={i} className="relative group">
@@ -626,6 +647,7 @@ function AddPhotoModal({
                     <button
                       onClick={() => removePreview(i)}
                       className="absolute -top-1.5 -right-1.5 w-4 h-4 bg-red-500 rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+                      title="Remove"
                     >
                       <X className="w-2.5 h-2.5 text-white" />
                     </button>
@@ -643,9 +665,9 @@ function AddPhotoModal({
           <Button
             className="flex-1 bg-orange-500 hover:bg-orange-600 text-white text-xs h-8 gap-1.5"
             onClick={handleSave}
-            disabled={previews.length === 0}
+            disabled={uploading || (previews.length === 0 && existingPhotos.length === 0)}
           >
-            <Save className="w-3 h-3" />Save {previews.length > 0 ? `${previews.length} Photo${previews.length !== 1 ? "s" : ""}` : "Photos"}
+            <Save className="w-3 h-3" />{previews.length > 0 ? `Save ${totalPhotos} Photo${totalPhotos !== 1 ? "s" : ""}` : "Save Photos"}
           </Button>
         </div>
       </motion.div>
