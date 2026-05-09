@@ -70,12 +70,14 @@ export async function POST(request: NextRequest) {
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        text,
-        voice_id: voiceId,
-        stability,
-        similarityBoost,
-        style: styleExaggeration,
-        speed,
+        input: {
+          text,
+          voice_id: voiceId,
+          stability,
+          similarityBoost,
+          style: styleExaggeration,
+          speed,
+        },
       }),
     })
 
@@ -87,8 +89,8 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    const submitData = await submitRes.json() as { runId?: string; id?: string }
-    const runId = submitData.runId ?? submitData.id
+    const submitData = await submitRes.json() as { runId: string }
+    const runId = submitData.runId
     if (!runId) {
       return NextResponse.json({ error: "No runId returned from Galaxy AI" }, { status: 500 })
     }

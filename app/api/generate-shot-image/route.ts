@@ -68,10 +68,12 @@ export async function POST(request: NextRequest) {
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        prompt: fullPrompt,
-        size: "1536x1024",
-        quality: "High",
-        output_format: "JPEG",
+        input: {
+          prompt: fullPrompt,
+          size: "1536x1024",
+          quality: "High",
+          output_format: "JPEG",
+        },
       }),
     })
 
@@ -88,8 +90,8 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: userMsg }, { status: 500 })
     }
 
-    const submitData = await submitRes.json() as { runId?: string; id?: string }
-    const runId = submitData.runId ?? submitData.id
+    const submitData = await submitRes.json() as { runId: string }
+    const runId = submitData.runId
     if (!runId) {
       return NextResponse.json({ error: "No runId returned from Galaxy AI" }, { status: 500 })
     }

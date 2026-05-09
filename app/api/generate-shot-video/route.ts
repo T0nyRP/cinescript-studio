@@ -43,24 +43,27 @@ export async function POST(request: NextRequest) {
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        image_url: imageUrl,
-        prompt,
-        duration: clampedDuration,
-        resolution: "720p",
-        generate_audio: false,
+        input: {
+          image_url: imageUrl,
+          prompt,
+          duration: clampedDuration,
+          resolution: "720p",
+          generate_audio: false,
+        },
       }),
     })
 
     if (!submitRes.ok) {
       const errText = await submitRes.text()
+      console.error(`[generate-shot-video] Galaxy AI rejected (${submitRes.status}):`, errText)
       return NextResponse.json(
         { error: `Galaxy AI video submission failed (${submitRes.status}): ${errText}` },
         { status: 500 }
       )
     }
 
-    const result = await submitRes.json() as { runId?: string; id?: string }
-    const runId = result.runId ?? result.id
+    const result = await submitRes.json() as { runId: string }
+    const runId = result.runId
     if (!runId) {
       return NextResponse.json({ error: "No runId returned from Galaxy AI" }, { status: 500 })
     }
