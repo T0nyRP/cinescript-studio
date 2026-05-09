@@ -273,14 +273,26 @@ function GeneratePageInner() {
   const pollImage = useCallback(
     (shotId: string, requestId: string): Promise<string> => {
       return new Promise((resolve, reject) => {
+        const deadline = Date.now() + 6 * 60 * 1000 // 6-minute max
+        let attempts = 0
         const attempt = async () => {
           if (abortRef.current) { reject(new Error("Aborted")); return }
+          if (Date.now() > deadline) {
+            reject(new Error("Image generation timed out after 6 minutes. Try retrying this shot."))
+            return
+          }
+          attempts++
           try {
             const res = await fetch("/api/poll-galaxy-status", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({ requestId, type: "image" }),
             })
+            if (!res.ok) {
+              // Transient server error — keep retrying
+              pollingRef.current[`img_${shotId}`] = setTimeout(attempt, 10000)
+              return
+            }
             const data = await res.json() as { status: string; imageUrl?: string; error?: string }
 
             if (data.status === "completed" && data.imageUrl) {
@@ -288,11 +300,13 @@ function GeneratePageInner() {
             } else if (data.status === "failed" || data.status === "error") {
               reject(new Error(data.error ?? "Image generation failed"))
             } else {
-              // Still processing — poll again in 8 seconds
-              pollingRef.current[`img_${shotId}`] = setTimeout(attempt, 8000)
+              // Still processing — poll every 8s
+              const delay = attempts <= 3 ? 5000 : 8000
+              pollingRef.current[`img_${shotId}`] = setTimeout(attempt, delay)
             }
           } catch (err) {
-            reject(err)
+            // Network error — retry after 10s
+            pollingRef.current[`img_${shotId}`] = setTimeout(attempt, 10000)
           }
         }
         attempt()
@@ -301,18 +315,28 @@ function GeneratePageInner() {
     []
   )
 
-    // ── Poll Galaxy AI for video status ──
+  // ── Poll Galaxy AI for video status ──
   const pollVideo = useCallback(
     (shotId: string, requestId: string, model: string): Promise<void> => {
       return new Promise((resolve) => {
+        const deadline = Date.now() + 10 * 60 * 1000 // 10-minute max for video
         const attempt = async () => {
           if (abortRef.current) { resolve(); return }
+          if (Date.now() > deadline) {
+            updateShot(shotId, { videoPhase: "error", videoError: "Video generation timed out after 10 minutes. Try retrying this shot." })
+            resolve()
+            return
+          }
           try {
             const res = await fetch("/api/poll-galaxy-status", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ requestId, model }),
+              body: JSON.stringify({ requestId, type: "video" }),
             })
+            if (!res.ok) {
+              pollingRef.current[shotId] = setTimeout(attempt, 10000)
+              return
+            }
             const data = await res.json() as { status: string; videoUrl?: string; error?: string }
 
             if (data.status === "completed") {
@@ -326,8 +350,8 @@ function GeneratePageInner() {
               pollingRef.current[shotId] = setTimeout(attempt, 8000)
             }
           } catch (err) {
-            updateShot(shotId, { videoPhase: "error", videoError: String(err) })
-            resolve()
+            // Network error — retry, don't fail permanently
+            pollingRef.current[shotId] = setTimeout(attempt, 10000)
           }
         }
         attempt()
