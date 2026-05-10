@@ -1,8 +1,8 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useRef, useEffect } from "react"
 import { motion, AnimatePresence } from "framer-motion"
-import { Play, Download, ExternalLink, Clock, Film, Layers, Loader2, X, Images, Zap } from "lucide-react"
+import { Play, Download, ExternalLink, Clock, Film, Layers, Loader2, X, Images, Zap, Volume2, VolumeX } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { useVideos } from "@/hooks/use-data-store"
@@ -11,6 +11,46 @@ import type { VideoRecord } from "@/types"
 // ─── Video Player Modal ───────────────────────────────────────────────────────
 
 function VideoPlayerModal({ video, onClose }: { video: VideoRecord; onClose: () => void }) {
+  const videoRef = useRef<HTMLVideoElement>(null)
+  const audioRef = useRef<HTMLAudioElement>(null)
+  const [audioIdx, setAudioIdx] = useState(0)
+  const hasAudio = Boolean(video.audioUrls && video.audioUrls.length > 0)
+
+  // Sync audio play/pause/seek with the video element
+  useEffect(() => {
+    const vid = videoRef.current
+    const aud = audioRef.current
+    if (!vid || !aud || !hasAudio) return
+
+    const onPlay = () => { aud.play().catch(() => {}) }
+    const onPause = () => { aud.pause() }
+    const onSeeked = () => { aud.currentTime = 0 }  // Reset audio to start on seek
+    const onEnded = () => {
+      // Advance to next audio track if available
+      setAudioIdx((prev) => {
+        const next = prev + 1
+        if (video.audioUrls && next < video.audioUrls.length) {
+          aud.src = video.audioUrls[next]
+          aud.play().catch(() => {})
+          return next
+        }
+        return prev
+      })
+    }
+
+    vid.addEventListener("play", onPlay)
+    vid.addEventListener("pause", onPause)
+    vid.addEventListener("seeked", onSeeked)
+    aud.addEventListener("ended", onEnded)
+
+    return () => {
+      vid.removeEventListener("play", onPlay)
+      vid.removeEventListener("pause", onPause)
+      vid.removeEventListener("seeked", onSeeked)
+      aud.removeEventListener("ended", onEnded)
+    }
+  }, [hasAudio, video.audioUrls])
+
   return (
     <AnimatePresence>
       <motion.div
@@ -33,23 +73,61 @@ function VideoPlayerModal({ video, onClose }: { video: VideoRecord; onClose: () 
               <h2 className="text-sm font-bold text-white">{video.title}</h2>
               <p className="text-xs text-white/40 mt-0.5">{video.subtitle}</p>
             </div>
-            <button
-              onClick={onClose}
-              className="w-8 h-8 rounded-lg bg-white/5 hover:bg-white/10 flex items-center justify-center transition-colors"
-            >
-              <X className="w-4 h-4 text-white/60" />
-            </button>
+            <div className="flex items-center gap-2">
+              {hasAudio && (
+                <span className="flex items-center gap-1 text-xs text-green-400 bg-green-500/10 px-2 py-1 rounded-full">
+                  <Volume2 className="w-3 h-3" />
+                  {video.audioUrls!.length} audio track{video.audioUrls!.length > 1 ? "s" : ""}
+                </span>
+              )}
+              <button
+                onClick={onClose}
+                className="w-8 h-8 rounded-lg bg-white/5 hover:bg-white/10 flex items-center justify-center transition-colors"
+              >
+                <X className="w-4 h-4 text-white/60" />
+              </button>
+            </div>
           </div>
 
           {/* Video player */}
           <div className="relative bg-black aspect-video">
             <video
+              ref={videoRef}
               src={video.videoUrl}
               controls
               autoPlay
               className="w-full h-full"
             />
+            {/* Hidden audio element for dialogue TTS */}
+            {hasAudio && (
+              <audio
+                ref={audioRef}
+                src={video.audioUrls![0]}
+                preload="auto"
+                className="hidden"
+              />
+            )}
           </div>
+
+          {/* Audio track pills — let user play individual shot audio */}
+          {hasAudio && video.audioUrls!.length > 1 && (
+            <div className="px-5 py-3 border-b border-white/5">
+              <p className="text-xs text-white/30 mb-2">Shot audio tracks</p>
+              <div className="flex flex-wrap gap-2">
+                {video.audioUrls!.map((url, i) => (
+                  <a
+                    key={i}
+                    href={url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex items-center gap-1 text-xs text-white/50 hover:text-green-400 bg-white/5 hover:bg-green-500/10 px-2.5 py-1 rounded-full transition-colors"
+                  >
+                    <Volume2 className="w-3 h-3" />Shot {i + 1}
+                  </a>
+                ))}
+              </div>
+            </div>
+          )}
 
           {/* Footer */}
           <div className="flex items-center justify-between px-5 py-3 border-t border-white/8">
@@ -122,6 +200,13 @@ function VideoCard({ video, onClick }: { video: VideoRecord; onClick: () => void
             </Badge>
           </div>
         )}
+        {video.hasVoice && (
+          <div className="absolute top-2 right-2">
+            <Badge className="bg-green-600/80 text-white border-0 text-xs px-1.5 py-0">
+              <Volume2 className="w-2.5 h-2.5 mr-1" />Audio
+            </Badge>
+          </div>
+        )}
       </div>
 
       {/* Info */}
@@ -131,7 +216,6 @@ function VideoCard({ video, onClick }: { video: VideoRecord; onClick: () => void
         <div className="flex items-center gap-3 mt-2 text-xs text-white/30">
           <span className="flex items-center gap-1"><Film className="w-3 h-3" />{video.shots} shots</span>
           <span className="flex items-center gap-1"><Layers className="w-3 h-3" />{video.style}</span>
-          {video.hasVoice && <span className="text-green-400">🎙 Voice</span>}
         </div>
         {video.characters?.length > 0 && (
           <div className="flex flex-wrap gap-1 mt-2">

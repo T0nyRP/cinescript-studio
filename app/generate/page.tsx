@@ -15,7 +15,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Progress } from "@/components/ui/progress"
 import { useCharacters, useScenes, useVideos } from "@/hooks/use-data-store"
 import { cn } from "@/lib/utils"
-import type { Shot, ShotDialogue, Scene, VideoRecord } from "@/types"
+import type { Shot, ShotDialogue, Scene, VideoRecord, Character } from "@/types"
 
 // ─── Style Definitions ────────────────────────────────────────────────────────
 
@@ -124,6 +124,7 @@ interface ShotGenState {
   videoRequestId?: string
   videoModel?: string
   videoError?: string
+  audioUrl?: string         // TTS audio for this shot's dialogue
 }
 
 type PipelinePhase = "idle" | "running" | "done" | "partial"
@@ -150,6 +151,7 @@ function ShotProgressCard({ state, onRetry }: { state: ShotGenState; onRetry: ()
           <span className="text-xs font-bold text-white/50">{state.order}</span>
         </div>
         <p className="flex-1 text-xs text-white/60 line-clamp-1">{state.description}</p>
+        {state.audioUrl && <Volume2 className="w-3.5 h-3.5 text-green-400 flex-shrink-0" />}
         {videoOk && <Check className="w-4 h-4 text-green-400 flex-shrink-0" />}
         {hasError && (
           <button onClick={onRetry} className="flex items-center gap-1 text-xs text-orange-400 hover:text-orange-300">
@@ -289,7 +291,6 @@ function GeneratePageInner() {
               body: JSON.stringify({ requestId, type: "image" }),
             })
             if (!res.ok) {
-              // Transient server error — keep retrying
               pollingRef.current[`img_${shotId}`] = setTimeout(attempt, 10000)
               return
             }
@@ -300,12 +301,10 @@ function GeneratePageInner() {
             } else if (data.status === "failed" || data.status === "error") {
               reject(new Error(data.error ?? "Image generation failed"))
             } else {
-              // Still processing — poll every 8s
               const delay = attempts <= 3 ? 5000 : 8000
               pollingRef.current[`img_${shotId}`] = setTimeout(attempt, delay)
             }
-          } catch (err) {
-            // Network error — retry after 10s
+          } catch {
             pollingRef.current[`img_${shotId}`] = setTimeout(attempt, 10000)
           }
         }
@@ -315,16 +314,16 @@ function GeneratePageInner() {
     []
   )
 
-  // ── Poll Galaxy AI for video status ──
+  // ── Poll Galaxy AI for video status — returns URL on success or null on failure ──
   const pollVideo = useCallback(
-    (shotId: string, requestId: string, model: string): Promise<void> => {
+    (shotId: string, requestId: string, model: string): Promise<string | null> => {
       return new Promise((resolve) => {
         const deadline = Date.now() + 10 * 60 * 1000 // 10-minute max for video
         const attempt = async () => {
-          if (abortRef.current) { resolve(); return }
+          if (abortRef.current) { resolve(null); return }
           if (Date.now() > deadline) {
             updateShot(shotId, { videoPhase: "error", videoError: "Video generation timed out after 10 minutes. Try retrying this shot." })
-            resolve()
+            resolve(null)
             return
           }
           try {
@@ -341,16 +340,14 @@ function GeneratePageInner() {
 
             if (data.status === "completed") {
               updateShot(shotId, { videoPhase: "done", videoUrl: data.videoUrl })
-              resolve()
+              resolve(data.videoUrl ?? null)
             } else if (data.status === "failed" || data.status === "error") {
               updateShot(shotId, { videoPhase: "error", videoError: data.error ?? "Generation failed" })
-              resolve()
+              resolve(null)
             } else {
-              // Still processing — poll again in 8 seconds
               pollingRef.current[shotId] = setTimeout(attempt, 8000)
             }
-          } catch (err) {
-            // Network error — retry, don't fail permanently
+          } catch {
             pollingRef.current[shotId] = setTimeout(attempt, 10000)
           }
         }
@@ -360,16 +357,95 @@ function GeneratePageInner() {
     [updateShot]
   )
 
+  // ── Poll for merge completion (called from handleSaveToVideos) ──
+  const pollForMerge = useCallback(async (runId: string): Promise<string | null> => {
+    const deadline = Date.now() + 8 * 60 * 1000  // 8-minute deadline — merging 8 clips takes time
+    while (Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 6000))
+      try {
+        const res = await fetch("/api/poll-galaxy-status", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ requestId: runId, type: "merge" }),
+        })
+        if (!res.ok) continue
+        const data = await res.json() as { status: string; videoUrl?: string; error?: string }
+        if (data.status === "completed" && data.videoUrl) return data.videoUrl
+        if (data.status === "failed" || data.status === "error") return null
+        // processing — keep polling
+      } catch {
+        // network hiccup — keep polling
+      }
+    }
+    return null
+  }, [])
+
+  // ── Generate TTS audio for a shot's dialogue (non-fatal if no voices set) ──
+  const generateShotTTS = useCallback(async (shot: Shot, shotChars: Character[]) => {
+    const spokenLines = (shot.dialogue ?? []).filter(
+      (l) => (l.type === "spoken" || l.type === "narration") && l.line.trim()
+    )
+    if (!spokenLines.length) return
+
+    // Find a character with a voice assigned — prefer the first speaker
+    let voiceId: string | undefined
+    let stability = 0.65
+    let similarityBoost = 0.80
+    let styleExaggeration = 10
+
+    for (const line of spokenLines) {
+      const char = shotChars.find(
+        (c) => c.name === line.characterName || c.id === line.characterId
+      )
+      if (char?.voice?.id) {
+        voiceId = char.voice.id
+        stability = char.voice.stability ?? 0.65
+        similarityBoost = char.voice.similarityBoost ?? 0.80
+        styleExaggeration = char.voice.styleExaggeration ?? 10
+        break
+      }
+    }
+
+    if (!voiceId) return  // No voice assigned — skip TTS silently
+
+    // Combine all spoken text for this shot into one TTS call
+    const combinedText = spokenLines.map((l) => l.line).join(" … ")
+    if (!combinedText.trim()) return
+
+    try {
+      const res = await fetch("/api/generate-dialogue-tts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          text: combinedText,
+          voiceId,
+          stability: stability / 100,      // normalize 0-100 → 0-1
+          similarityBoost: similarityBoost / 100,
+          styleExaggeration: styleExaggeration / 100,
+        }),
+      })
+      const data = await res.json() as { audioUrl?: string; error?: string }
+      if (data.audioUrl) {
+        updateShot(shot.id, { audioUrl: data.audioUrl })
+      }
+    } catch {
+      // TTS is non-fatal — video generation still proceeds without audio
+    }
+  }, [updateShot])
+
   // ── Generate a single shot ──
   const generateShot = useCallback(
     async (shot: Shot) => {
       if (abortRef.current) return
 
-      // Resolve characters in this shot from the full library (for rich descriptions + reference images)
+      // ── FIX: Only include characters explicitly listed for THIS shot ──
+      // If shot.characters is empty, fall back to all scene characters.
+      const shotCharNames = shot.characters ?? []
       const shotChars = sceneCharacters.filter((c) =>
-        (shot.characters ?? []).includes(c.name) || scene?.characters?.includes(c.id)
+        shotCharNames.length === 0 || shotCharNames.includes(c.name)
       )
-      // Collect reference photos from the character library
+
+      // Collect reference photos from the character library (character consistency)
       const referenceImageUrls = shotChars
         .flatMap((c) => [c.imageUrl, ...(c.referenceImages ?? [])])
         .filter((u): u is string => typeof u === "string" && u.startsWith("http"))
@@ -385,7 +461,6 @@ function GeneratePageInner() {
           body: JSON.stringify({
             prompt: (shot as Shot & { prompt?: string }).prompt || shot.description,
             style: selectedStyle,
-            // Pass full character objects so route can build detailed appearance desc
             characters: shotChars.map((c) => ({
               name: c.name,
               age: c.age,
@@ -399,7 +474,6 @@ function GeneratePageInner() {
         if (!imgRes.ok || imgData.error) throw new Error(imgData.error || "Image submission failed")
         if (!imgData.requestId) throw new Error("No requestId from Galaxy AI")
 
-        // Mark image as polling
         updateShot(shot.id, { imagePhase: "polling", imageRequestId: imgData.requestId })
 
         if (abortRef.current) return
@@ -410,7 +484,7 @@ function GeneratePageInner() {
 
         if (abortRef.current) return
 
-        // ── Step 3: Submit video job (use reference model if characters have photos) ──
+        // ── Step 3: Submit video job ──
         const vidRes = await fetch("/api/generate-shot-video", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -418,7 +492,7 @@ function GeneratePageInner() {
             imageUrl,
             prompt: (shot as Shot & { prompt?: string }).prompt || shot.description,
             duration: shot.duration ?? 10,
-            referenceImageUrls,   // character library photos → seedance_2_0_fast_reference
+            referenceImageUrls,
             characterNames,
           }),
         })
@@ -432,8 +506,13 @@ function GeneratePageInner() {
           videoModel: vidData.model,
         })
 
-        // ── Step 4: Poll until video done ──
-        await pollVideo(shot.id, vidData.requestId, vidData.model ?? "")
+        // ── Step 4: Poll until video done — get the URL back ──
+        const videoUrl = await pollVideo(shot.id, vidData.requestId, vidData.model ?? "")
+
+        // ── Step 5: Generate TTS for this shot's dialogue (non-fatal) ──
+        if (videoUrl && shot.dialogue && shot.dialogue.length > 0) {
+          await generateShotTTS(shot, shotChars)
+        }
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err)
         setShotStates((prev) => prev.map((s) => {
@@ -446,7 +525,7 @@ function GeneratePageInner() {
         }))
       }
     },
-    [sceneCharacters, scene, selectedStyle, updateShot, pollImage, pollVideo]
+    [sceneCharacters, scene, selectedStyle, updateShot, pollImage, pollVideo, generateShotTTS]
   )
 
   // ── Start full pipeline ──
@@ -455,7 +534,6 @@ function GeneratePageInner() {
     abortRef.current = false
     setSaved(false)
 
-    // Initialize all shot states
     const initial: ShotGenState[] = scene.shotBreakdown.map((shot) => ({
       shotId: shot.id,
       order: shot.order,
@@ -467,13 +545,11 @@ function GeneratePageInner() {
     setPipeline("running")
     setActiveTab("generate")
 
-    // Process shots sequentially (prevents rate-limiting issues)
+    // Process shots sequentially (prevents rate-limiting)
     for (const shot of scene.shotBreakdown) {
       if (abortRef.current) break
       await generateShot(shot)
     }
-
-    // Pipeline completion is handled by the useEffect below (avoids stale closure)
   }, [scene, generateShot])
 
   // ── Retry a failed shot ──
@@ -488,6 +564,7 @@ function GeneratePageInner() {
         videoUrl: undefined,
         videoRequestId: undefined,
         videoError: undefined,
+        audioUrl: undefined,
       })
       generateShot(shot)
     },
@@ -502,8 +579,9 @@ function GeneratePageInner() {
     setPipeline("partial")
   }
 
-  // ── Save to Videos (merge clips first) ──
+  // ── Save to Videos (merge clips + collect audio) ──
   const [saving, setSaving] = useState(false)
+  const [saveStatus, setSaveStatus] = useState<string>("Merging clips…")
   const [saveError, setSaveError] = useState<string | null>(null)
 
   const handleSaveToVideos = async () => {
@@ -521,23 +599,48 @@ function GeneratePageInner() {
       return acc + (shot?.duration ?? 10)
     }, 0)
 
-    // Merge all clips into one video
+    // ── Step A: Merge all video clips into one ──
     let finalVideoUrl = videoUrls[0]
     let mergeWarning: string | null = null
+
     if (videoUrls.length > 1) {
+      setSaveStatus("Submitting merge job…")
       try {
         const mergeRes = await fetch("/api/merge-clips", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ videoUrls }),
         })
-        const mergeData = await mergeRes.json() as { videoUrl: string; warning?: string }
-        if (mergeData.videoUrl) finalVideoUrl = mergeData.videoUrl
-        if (mergeData.warning) mergeWarning = mergeData.warning
+        const mergeData = await mergeRes.json() as {
+          runId?: string
+          videoUrl?: string
+          error?: string
+        }
+
+        if (mergeData.videoUrl) {
+          // Single clip — already done
+          finalVideoUrl = mergeData.videoUrl
+        } else if (mergeData.runId) {
+          // Async merge — poll until complete
+          setSaveStatus("Merging clips… (this may take a few minutes)")
+          const mergedUrl = await pollForMerge(mergeData.runId)
+          if (mergedUrl) {
+            finalVideoUrl = mergedUrl
+          } else {
+            mergeWarning = "Merge timed out — saved first clip only"
+          }
+        } else {
+          mergeWarning = mergeData.error ?? "Merge failed — saved first clip"
+        }
       } catch (err) {
         mergeWarning = `Merge error: ${err instanceof Error ? err.message : String(err)}`
       }
     }
+
+    // ── Step B: Collect TTS audio URLs from shot states ──
+    const audioUrls = completedClips
+      .map((s) => s.audioUrl)
+      .filter((u): u is string => Boolean(u))
 
     const mins = Math.floor(totalSecs / 60)
     const secs = totalSecs % 60
@@ -562,7 +665,8 @@ function GeneratePageInner() {
       generatedAt: new Date().toISOString(),
       facebookReady: true,
       tags: ["cinescript", selectedStyle, scene.chapter ?? ""].filter(Boolean),
-      hasVoice: false,
+      hasVoice: audioUrls.length > 0,
+      audioUrls: audioUrls.length > 0 ? audioUrls : undefined,
     }
 
     await addVideo(record)
@@ -576,7 +680,6 @@ function GeneratePageInner() {
   const progressPct = totalShots > 0 ? Math.round((doneCount / totalShots) * 100) : 0
   const allDone = totalShots > 0 && shotStates.every((s) => s.videoPhase === "done" || s.videoPhase === "error")
 
-  // Update pipeline phase when all shots resolve
   useEffect(() => {
     if (pipeline === "running" && allDone) {
       const anyError = shotStates.some((s) => s.imagePhase === "error" || s.videoPhase === "error")
@@ -640,7 +743,6 @@ function GeneratePageInner() {
 
         {/* ── SETUP TAB ── */}
         <TabsContent value="setup" className="space-y-6">
-          {/* Scene selector */}
           <div>
             <h3 className="text-xs font-semibold text-white/50 uppercase tracking-wider mb-3">Scene</h3>
             <div className="space-y-2">
@@ -658,7 +760,6 @@ function GeneratePageInner() {
             </div>
           </div>
 
-          {/* Style */}
           <div>
             <h3 className="text-xs font-semibold text-white/50 uppercase tracking-wider mb-3">Visual Style</h3>
             <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
@@ -671,7 +772,6 @@ function GeneratePageInner() {
             </div>
           </div>
 
-          {/* Characters */}
           <div>
             <h3 className="text-xs font-semibold text-white/50 uppercase tracking-wider mb-3">Characters in This Scene</h3>
             {sceneCharacters.length === 0 ? (
@@ -708,7 +808,6 @@ function GeneratePageInner() {
             )}
           </div>
 
-          {/* CTA */}
           <Button
             className="w-full bg-orange-500 hover:bg-orange-600 text-white font-semibold h-11 gap-2"
             onClick={() => setActiveTab("generate")}
@@ -734,7 +833,6 @@ function GeneratePageInner() {
         {/* ── GENERATE TAB ── */}
         <TabsContent value="generate" className="space-y-6">
 
-          {/* API Key setup notice */}
           <div className="bg-blue-500/8 border border-blue-500/20 rounded-xl p-4 space-y-1">
             <p className="text-xs font-semibold text-blue-300">Required: Add API Keys to Vercel</p>
             <p className="text-xs text-blue-300/70">
@@ -742,11 +840,9 @@ function GeneratePageInner() {
             </p>
             <ul className="text-xs text-blue-300/60 space-y-0.5 ml-3 list-disc">
               <li><code className="font-mono">GALAXY_API_KEY</code> — from <a href="https://galaxy.ai" target="_blank" rel="noreferrer" className="underline">galaxy.ai</a> (image, video &amp; voice generation)</li>
-
             </ul>
           </div>
 
-          {/* Scene + Style summary */}
           <div className="grid grid-cols-2 gap-3">
             <div className="bg-white/3 border border-white/8 rounded-xl p-3">
               <p className="text-xs text-white/30 mb-1">Scene</p>
@@ -760,7 +856,6 @@ function GeneratePageInner() {
             </div>
           </div>
 
-          {/* Progress bar (during / after generation) */}
           {pipeline !== "idle" && totalShots > 0 && (
             <div className="space-y-2">
               <div className="flex items-center justify-between">
@@ -771,7 +866,6 @@ function GeneratePageInner() {
             </div>
           )}
 
-          {/* Action buttons */}
           <div className="flex gap-3">
             {pipeline === "idle" || pipeline === "partial" ? (
               <Button
@@ -797,12 +891,11 @@ function GeneratePageInner() {
                 onClick={handleSaveToVideos}
                 disabled={saved || saving}
               >
-                {saved ? <><Check className="w-4 h-4" />Saved!</> : saving ? <><Loader2 className="w-4 h-4 animate-spin" />Merging clips…</> : <><Save className="w-4 h-4" />Save to Videos</>}
+                {saved ? <><Check className="w-4 h-4" />Saved!</> : saving ? <><Loader2 className="w-4 h-4 animate-spin" />{saveStatus}</> : <><Save className="w-4 h-4" />Save to Videos</>}
               </Button>
             )}
           </div>
 
-          {/* Shot progress cards */}
           <AnimatePresence>
             {shotStates.map((state) => {
               const shot = scene.shotBreakdown?.find((s) => s.id === state.shotId)
@@ -816,7 +909,6 @@ function GeneratePageInner() {
             })}
           </AnimatePresence>
 
-          {/* Idle placeholder */}
           {pipeline === "idle" && (
             <div className="border border-dashed border-white/10 rounded-xl p-10 text-center">
               <Clapperboard className="w-10 h-10 text-white/15 mx-auto mb-3" />
@@ -825,7 +917,6 @@ function GeneratePageInner() {
             </div>
           )}
 
-          {/* Done message */}
           {pipeline === "done" && (
             <motion.div
               initial={{ opacity: 0, y: 8 }}
@@ -835,7 +926,7 @@ function GeneratePageInner() {
               <Check className="w-6 h-6 text-green-400 mx-auto mb-2" />
               <p className="text-sm font-semibold text-green-300">All {doneCount} clips generated!</p>
               <p className="text-xs text-green-400/60 mt-1">
-                {saved ? "Saved to Videos page." : saving ? "Merging clips into one video…" : "Click Save to Videos to merge clips and add to your library."}
+                {saved ? "Saved to Videos page." : saving ? saveStatus : "Click Save to Videos to merge clips and add to your library."}
               </p>
             </motion.div>
           )}

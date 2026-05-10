@@ -9,16 +9,19 @@ const MODEL = "elevenlabs_v3_tts"
 function extractAudioUrl(output: unknown): string | null {
   if (!output || typeof output !== "object") return null
   const o = output as Record<string, unknown>
-  // { audioUrl }
   if (typeof o.audioUrl === "string") return o.audioUrl
-  // { url }
   if (typeof o.url === "string") return o.url
-  // { audio: { url } }
   if (o.audio && typeof (o.audio as Record<string, unknown>).url === "string") {
     return (o.audio as Record<string, unknown>).url as string
   }
-  // { audio_url }
   if (typeof o.audio_url === "string") return o.audio_url
+  // { result: ["https://...mp3"] } — Galaxy AI actual output shape
+  if (Array.isArray(o.result) && o.result.length > 0) {
+    for (const item of o.result) {
+      if (typeof item === "string" && item.startsWith("http")) return item
+    }
+  }
+  if (o.output && typeof o.output === "object") return extractAudioUrl(o.output)
   return null
 }
 
@@ -95,9 +98,9 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "No runId returned from Galaxy AI" }, { status: 500 })
     }
 
-    // Poll synchronously — max 55 s
+    // Poll synchronously — TTS is fast, usually 5-20 seconds
     const deadline = Date.now() + 55_000
-    const pollInterval = 2_000
+    const pollInterval = 2_500
 
     while (Date.now() < deadline) {
       await new Promise((r) => setTimeout(r, pollInterval))
@@ -114,18 +117,22 @@ export async function POST(request: NextRequest) {
         error?: string
       }
 
-      if (pollData.status === "completed") {
+      // Galaxy AI returns UPPERCASE statuses
+      const status = (pollData.status ?? "").toLowerCase()
+
+      if (status === "completed") {
         const audioUrl = extractAudioUrl(pollData.output)
         if (!audioUrl) {
+          console.error("[generate-dialogue-tts] extractAudioUrl failed. Raw output:", JSON.stringify(pollData.output))
           return NextResponse.json(
-            { error: "TTS completed but no audio URL found in output" },
+            { error: `TTS completed but no audio URL found. Raw output: ${JSON.stringify(pollData.output).slice(0, 300)}` },
             { status: 500 }
           )
         }
         return NextResponse.json({ audioUrl })
       }
 
-      if (pollData.status === "failed") {
+      if (status === "failed") {
         return NextResponse.json(
           { error: `TTS generation failed: ${pollData.error ?? "unknown error"}` },
           { status: 500 }

@@ -85,6 +85,27 @@ function extractImageUrl(output: unknown): string | null {
   return null
 }
 
+function extractAudioUrl(output: unknown): string | null {
+  if (!output || typeof output !== "object") return null
+  const o = output as Record<string, unknown>
+  if (typeof o.audioUrl === "string") return o.audioUrl
+  if (typeof o.audio_url === "string") return o.audio_url
+  if (typeof o.url === "string" && (o.url as string).startsWith("http")) return o.url as string
+  // { audio: { url } }
+  if (o.audio && typeof o.audio === "object") {
+    const a = o.audio as Record<string, unknown>
+    if (typeof a.url === "string") return a.url
+  }
+  // { result: ["https://...mp3"] }
+  if (Array.isArray(o.result) && o.result.length > 0) {
+    for (const item of o.result) {
+      if (typeof item === "string" && item.startsWith("http")) return item
+    }
+  }
+  if (o.output && typeof o.output === "object") return extractAudioUrl(o.output)
+  return null
+}
+
 // ── Route ────────────────────────────────────────────────────────────────────
 
 export async function POST(request: NextRequest) {
@@ -97,9 +118,9 @@ export async function POST(request: NextRequest) {
   }
 
   let runId = ""
-  let assetType: "video" | "image" = "video"
+  let assetType: "video" | "image" | "merge" | "audio" = "video"
   try {
-    const body = await request.json() as { requestId: string; type?: "video" | "image" }
+    const body = await request.json() as { requestId: string; type?: "video" | "image" | "merge" | "audio" }
     runId = body.requestId
     assetType = body.type ?? "video"
   } catch {
@@ -137,7 +158,6 @@ export async function POST(request: NextRequest) {
       if (assetType === "image") {
         const imageUrl = extractImageUrl(data.output)
         if (!imageUrl) {
-          // Log for Vercel Function Logs and return raw output for diagnosis
           console.error("[poll-galaxy-status] extractImageUrl failed. Raw output:", JSON.stringify(data.output))
           return NextResponse.json({
             status: "error",
@@ -145,13 +165,24 @@ export async function POST(request: NextRequest) {
           })
         }
         return NextResponse.json({ status: "completed", imageUrl })
+      } else if (assetType === "audio") {
+        const audioUrl = extractAudioUrl(data.output)
+        if (!audioUrl) {
+          console.error("[poll-galaxy-status] extractAudioUrl failed. Raw output:", JSON.stringify(data.output))
+          return NextResponse.json({
+            status: "error",
+            error: `Audio completed but URL not found. Raw output: ${JSON.stringify(data.output).slice(0, 300)}`,
+          })
+        }
+        return NextResponse.json({ status: "completed", audioUrl })
       } else {
+        // "video" | "merge" — both return a video URL
         const videoUrl = extractVideoUrl(data.output)
         if (!videoUrl) {
           console.error("[poll-galaxy-status] extractVideoUrl failed. Raw output:", JSON.stringify(data.output))
           return NextResponse.json({
             status: "error",
-            error: `Video completed but URL not found. Raw output: ${JSON.stringify(data.output).slice(0, 500)}`,
+            error: `${assetType === "merge" ? "Merge" : "Video"} completed but URL not found. Raw output: ${JSON.stringify(data.output).slice(0, 500)}`,
           })
         }
         return NextResponse.json({ status: "completed", videoUrl })
@@ -165,7 +196,7 @@ export async function POST(request: NextRequest) {
       })
     }
 
-    // pending / running
+    // pending / running / queued
     return NextResponse.json({ status: "processing" })
   } catch (err) {
     return NextResponse.json({

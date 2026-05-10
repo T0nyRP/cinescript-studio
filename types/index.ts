@@ -102,6 +102,7 @@ export interface VideoRecord {
   facebookReady: boolean
   tags: string[]
   hasVoice?: boolean
+  audioUrls?: string[]   // Per-shot TTS audio URLs (index matches shot order)
 }
 
 export interface VideoProject {
