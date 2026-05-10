@@ -365,14 +365,16 @@ function GeneratePageInner() {
     async (shot: Shot) => {
       if (abortRef.current) return
 
-      // Build character description for the image prompt
+      // Resolve characters in this shot from the full library (for rich descriptions + reference images)
       const shotChars = sceneCharacters.filter((c) =>
         (shot.characters ?? []).includes(c.name) || scene?.characters?.includes(c.id)
       )
-      const characterDesc = shotChars
-        .map((c) => `${c.name} (${c.appearance?.hair ?? ""} hair, ${c.appearance?.build ?? ""})`)
-        .filter(Boolean)
-        .join(", ")
+      // Collect reference photos from the character library
+      const referenceImageUrls = shotChars
+        .flatMap((c) => [c.imageUrl, ...(c.referenceImages ?? [])])
+        .filter((u): u is string => typeof u === "string" && u.startsWith("http"))
+        .slice(0, 4)
+      const characterNames = shotChars.map((c) => c.name)
 
       // ── Step 1: Submit image job (async — GPT Image 2 takes 60-90s) ──
       updateShot(shot.id, { imagePhase: "loading" })
@@ -383,7 +385,14 @@ function GeneratePageInner() {
           body: JSON.stringify({
             prompt: (shot as Shot & { prompt?: string }).prompt || shot.description,
             style: selectedStyle,
-            characterDesc,
+            // Pass full character objects so route can build detailed appearance desc
+            characters: shotChars.map((c) => ({
+              name: c.name,
+              age: c.age,
+              role: c.role,
+              appearance: c.appearance,
+              personality: c.personality,
+            })),
           }),
         })
         const imgData = await imgRes.json() as { requestId?: string; model?: string; error?: string }
@@ -401,7 +410,7 @@ function GeneratePageInner() {
 
         if (abortRef.current) return
 
-        // ── Step 3: Submit video job ──
+        // ── Step 3: Submit video job (use reference model if characters have photos) ──
         const vidRes = await fetch("/api/generate-shot-video", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -409,6 +418,8 @@ function GeneratePageInner() {
             imageUrl,
             prompt: (shot as Shot & { prompt?: string }).prompt || shot.description,
             duration: shot.duration ?? 10,
+            referenceImageUrls,   // character library photos → seedance_2_0_fast_reference
+            characterNames,
           }),
         })
         const vidData = await vidRes.json() as { requestId?: string; model?: string; error?: string }

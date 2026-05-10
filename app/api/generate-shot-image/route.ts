@@ -15,38 +15,76 @@ const STYLE_SUFFIX: Record<string, string> = {
   "comic-book": "bold outlines, graphic novel style, vivid saturated colors",
 }
 
+interface CharacterAppearance {
+  hair?: string
+  eyes?: string
+  height?: string
+  build?: string
+  distinguishing?: string
+  clothing?: string
+}
+
+interface CharacterRef {
+  name: string
+  age?: string
+  role?: string
+  appearance?: CharacterAppearance
+  personality?: string[]
+}
+
+/** Build a detailed appearance description from the full character library record */
+function buildCharacterDesc(chars: CharacterRef[]): string {
+  return chars.map((c) => {
+    const a = c.appearance ?? {}
+    const parts = [
+      c.name,
+      c.age ? `${c.age}-year-old` : "",
+      a.build ?? "",
+      a.height ?? "",
+      a.hair ? `${a.hair} hair` : "",
+      a.eyes ? `${a.eyes} eyes` : "",
+      a.distinguishing ?? "",
+      a.clothing ?? "",
+    ].filter(Boolean)
+    return parts.join(", ")
+  }).join("; ")
+}
+
 export async function POST(request: NextRequest) {
   const apiKey = process.env.GALAXY_API_KEY
   if (!apiKey) {
     return NextResponse.json(
-      { error: "GALAXY_API_KEY is not set. Go to your Vercel Dashboard → Project → Settings → Environment Variables and add GALAXY_API_KEY (starts with gx_)." },
+      { error: "GALAXY_API_KEY is not set. Add it in Vercel → Project → Settings → Environment Variables." },
       { status: 503 }
     )
   }
 
   let prompt = ""
   let style = "cinematic"
-  let characterDesc = ""
+  let characters: CharacterRef[] = []
   try {
-    const body = await request.json() as { prompt: string; style?: string; characterDesc?: string }
+    const body = await request.json() as {
+      prompt: string
+      style?: string
+      characters?: CharacterRef[]   // full character objects from the library
+    }
     prompt = body.prompt ?? ""
     style = body.style ?? "cinematic"
-    characterDesc = body.characterDesc ?? ""
+    characters = body.characters ?? []
   } catch {
     return NextResponse.json({ error: "Invalid request body" }, { status: 400 })
   }
 
   const styleTag = STYLE_SUFFIX[style] ?? STYLE_SUFFIX.cinematic
-  const charTag = characterDesc ? `, featuring ${characterDesc}` : ""
-  const fullPrompt = `${prompt}${charTag}, ${styleTag}, 16:9 widescreen, professional film photography, high detail`
+  const charDesc = characters.length > 0 ? `, featuring ${buildCharacterDesc(characters)}` : ""
+  const fullPrompt =
+    `${prompt}${charDesc}, ${styleTag}, 16:9 widescreen, professional film photography, high detail`
 
   try {
-    // Submit job — do NOT poll here; GPT Image 2 takes 60-90s which exceeds
-    // Vercel's function timeout. Return runId so the frontend can poll async.
     const submitRes = await fetch(`${GALAXY_API}/nodes/${MODEL}/run`, {
       method: "POST",
       headers: {
-        "Authorization": `Bearer ${apiKey}`,
+        Authorization: `Bearer ${apiKey}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
@@ -61,25 +99,19 @@ export async function POST(request: NextRequest) {
 
     if (!submitRes.ok) {
       const errText = await submitRes.text()
-      console.error(`[generate-shot-image] Galaxy AI rejected request (${submitRes.status}):`, errText)
-      const userMsg =
+      console.error(`[generate-shot-image] Galaxy AI rejected (${submitRes.status}):`, errText)
+      const msg =
         submitRes.status === 401 || submitRes.status === 403
-          ? "GALAXY_API_KEY is invalid or unauthorised. Check your Vercel env vars."
+          ? "GALAXY_API_KEY is invalid or unauthorised."
           : submitRes.status === 404
           ? `Galaxy AI node not found (${submitRes.status}): ${errText}`
-          : submitRes.status === 422 || submitRes.status === 400
-          ? `Galaxy AI rejected input (${submitRes.status}): ${errText}`
           : `Galaxy AI error (${submitRes.status}): ${errText}`
-      return NextResponse.json({ error: userMsg }, { status: 500 })
+      return NextResponse.json({ error: msg }, { status: 500 })
     }
 
-    const submitData = await submitRes.json() as { runId: string }
-    const runId = submitData.runId
-    if (!runId) {
-      return NextResponse.json({ error: "No runId returned from Galaxy AI" }, { status: 500 })
-    }
+    const { runId } = await submitRes.json() as { runId: string }
+    if (!runId) return NextResponse.json({ error: "No runId returned from Galaxy AI" }, { status: 500 })
 
-    // Return runId — frontend polls /api/poll-galaxy-status?type=image
     return NextResponse.json({ requestId: runId, model: MODEL })
   } catch (err) {
     return NextResponse.json(

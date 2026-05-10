@@ -56,7 +56,7 @@ Return this JSON structure — keep ALL string values SHORT (under 100 chars) to
           "description": "Short shot desc",
           "action": "What happens",
           "lighting": "Lighting type",
-          "duration": 8,
+          "duration": 10,
           "characters": ["Character name"],
           "prompt": "Cinematic image prompt under 100 chars"
         }
@@ -67,8 +67,8 @@ Return this JSON structure — keep ALL string values SHORT (under 100 chars) to
 
 STRICT RULES:
 - Extract 3–5 main characters only
-- Extract 3–4 best action/dramatic scenes only  
-- Each scene: exactly 4 shots
+- Extract 2–3 best action/dramatic scenes only  
+- Each scene: exactly 8 shots (8 shots × 10s = 80s per scene, close to the 1–2 min target)
 - All string values: under 100 characters
 - summary: 1 sentence max
 - actionLevel: one of "low" "medium" "high" "extreme"
