@@ -1,52 +1,16 @@
-"use client";
+"use client"
 
-import { useState } from "react";
-import { motion, AnimatePresence } from "framer-motion";
-import { Play, Download, ExternalLink, Clock, Film, Layers, Zap, X, Images } from "lucide-react";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
+import { useState } from "react"
+import { motion, AnimatePresence } from "framer-motion"
+import { Play, Download, ExternalLink, Clock, Film, Layers, Loader2, X, Images, Zap } from "lucide-react"
+import { Badge } from "@/components/ui/badge"
+import { Button } from "@/components/ui/button"
+import { useVideos } from "@/hooks/use-data-store"
+import type { VideoRecord } from "@/types"
 
-interface VideoEntry {
-  id: string;
-  title: string;
-  subtitle: string;
-  videoUrl: string;
-  thumbnailUrl: string;
-  duration: string;
-  shots: number;
-  scene: string;
-  style: string;
-  characters: string[];
-  referenceImages: { name: string; url: string }[];
-  generatedAt: string;
-  facebookReady: boolean;
-  tags: string[];
-}
+// ─── Video Player Modal ───────────────────────────────────────────────────────
 
-const VIDEOS: VideoEntry[] = [
-  {
-    id: "v2",
-    title: "The Istanbul Warehouse Raid",
-    subtitle: "Reference-consistent 8-shot cinematic cut",
-    videoUrl: "https://galaxy-prod.tlcdn.com/gen/user_36cCqh2jHHMI3sNTjlQM2JQrUTU/83e3d5d3-e3fa-49e9-848d-d133ad579c25.mp4",
-    thumbnailUrl: "https://galaxy-prod.tlcdn.com/gen/user_36cCqh2jHHMI3sNTjlQM2JQrUTU/c3fee0ee-ed41-44b0-975d-697d6d7dfe7f.png",
-    duration: "1:13",
-    shots: 8,
-    scene: "Chapter 6: The Infiltration",
-    style: "Cinematic",
-    characters: ["Jace Maddox", "Alex Torres", "Omar Al-Rashid"],
-    referenceImages: [
-      { name: "Jace Maddox", url: "https://cdn.galaxy.ai/user_36cCqh2jHHMI3sNTjlQM2JQrUTU/918a05f01df6412a8c67422987284e77.jpg" },
-      { name: "Alex Torres", url: "https://cdn.galaxy.ai/user_36cCqh2jHHMI3sNTjlQM2JQrUTU/bbd0c74c9dea4dd0af8305995871f2a9.jpg" },
-      { name: "Omar Al-Rashid", url: "https://cdn.galaxy.ai/user_36cCqh2jHHMI3sNTjlQM2JQrUTU/615fce761d554bcbaf92ec2a7f04b442.jpg" },
-    ],
-    generatedAt: new Date().toISOString(),
-    facebookReady: true,
-    tags: ["Action", "Istanbul", "SYNAPSE", "AI Battle", "Reference-Locked"]
-  }
-];
-
-function VideoPlayerModal({ video, onClose }: { video: VideoEntry; onClose: () => void }) {
+function VideoPlayerModal({ video, onClose }: { video: VideoRecord; onClose: () => void }) {
   return (
     <AnimatePresence>
       <motion.div
@@ -69,196 +33,179 @@ function VideoPlayerModal({ video, onClose }: { video: VideoEntry; onClose: () =
               <h2 className="text-sm font-bold text-white">{video.title}</h2>
               <p className="text-xs text-white/40 mt-0.5">{video.subtitle}</p>
             </div>
-            <button onClick={onClose} className="w-8 h-8 rounded-lg bg-white/5 hover:bg-white/10 flex items-center justify-center transition-colors">
+            <button
+              onClick={onClose}
+              className="w-8 h-8 rounded-lg bg-white/5 hover:bg-white/10 flex items-center justify-center transition-colors"
+            >
               <X className="w-4 h-4 text-white/60" />
             </button>
           </div>
 
           {/* Video player */}
-          <div className="relative bg-black">
+          <div className="relative bg-black aspect-video">
             <video
+              src={video.videoUrl}
               controls
               autoPlay
-              className="w-full max-h-[60vh] object-contain"
-              src={video.videoUrl}
-            >
-              Your browser does not support the video tag.
-            </video>
+              className="w-full h-full"
+            />
           </div>
 
           {/* Footer */}
-          <div className="px-5 py-4 flex items-center justify-between gap-3 flex-wrap">
+          <div className="flex items-center justify-between px-5 py-3 border-t border-white/8">
             <div className="flex items-center gap-4 text-xs text-white/40">
-              <span className="flex items-center gap-1.5"><Clock className="w-3 h-3" />{video.duration}</span>
-              <span className="flex items-center gap-1.5"><Layers className="w-3 h-3" />{video.shots} shots</span>
-              <span className="flex items-center gap-1.5"><Images className="w-3 h-3 text-green-400" /><span className="text-green-400">Reference-locked</span></span>
+              <span className="flex items-center gap-1"><Clock className="w-3 h-3" />{video.duration}</span>
+              <span className="flex items-center gap-1"><Film className="w-3 h-3" />{video.shots} shot{video.shots !== 1 ? "s" : ""}</span>
+              <span className="flex items-center gap-1"><Layers className="w-3 h-3" />{video.style}</span>
             </div>
             <div className="flex gap-2">
-              <Button
-                size="sm"
-                variant="outline"
-                className="border-white/15 text-white/60 hover:text-white text-xs h-8 gap-1.5"
-                onClick={() => window.open(video.videoUrl, "_blank")}
+              <a
+                href={video.videoUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex items-center gap-1.5 text-xs text-white/50 hover:text-white/80 transition-colors"
               >
-                <ExternalLink className="w-3 h-3" />
-                Open
-              </Button>
-              <Button
-                size="sm"
-                className="bg-orange-500 hover:bg-orange-600 text-white text-xs h-8 gap-1.5"
-                onClick={() => {
-                  const a = document.createElement("a");
-                  a.href = video.videoUrl;
-                  a.download = `${video.title.replace(/\s+/g, "_")}.mp4`;
-                  document.body.appendChild(a);
-                  a.click();
-                  document.body.removeChild(a);
-                }}
+                <ExternalLink className="w-3.5 h-3.5" />Open
+              </a>
+              <a
+                href={video.videoUrl}
+                download
+                className="flex items-center gap-1.5 text-xs text-orange-400 hover:text-orange-300 transition-colors"
               >
-                <Download className="w-3 h-3" />
-                Download
-              </Button>
+                <Download className="w-3.5 h-3.5" />Download
+              </a>
             </div>
           </div>
         </motion.div>
       </motion.div>
     </AnimatePresence>
-  );
+  )
 }
 
-export default function VideosPage() {
-  const [playingVideo, setPlayingVideo] = useState<VideoEntry | null>(null);
+// ─── Video Card ───────────────────────────────────────────────────────────────
 
+function VideoCard({ video, onClick }: { video: VideoRecord; onClick: () => void }) {
   return (
-    <div className="min-h-screen p-8">
-      <motion.div initial={{ opacity: 0, y: -20 }} animate={{ opacity: 1, y: 0 }} className="mb-8">
-        <Badge className="bg-orange-500/20 text-orange-400 border border-orange-500/30 text-xs mb-3">
-          <Film className="w-3 h-3 mr-1" />
-          My Videos
-        </Badge>
-        <h1 className="text-3xl font-bold text-white mb-2">Generated Videos</h1>
-        <p className="text-white/50 text-sm max-w-lg">
-          Facebook-ready cinematic videos generated from your manuscripts. All characters are reference-locked for visual consistency.
-        </p>
-      </motion.div>
-
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {VIDEOS.map((video, i) => (
-          <motion.div
-            key={video.id}
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: i * 0.07 }}
-            className="bg-white/3 border border-white/8 rounded-2xl overflow-hidden hover:border-white/15 transition-all group"
-          >
-            {/* Thumbnail */}
-            <div className="relative aspect-video bg-black overflow-hidden cursor-pointer" onClick={() => setPlayingVideo(video)}>
-              <img src={video.thumbnailUrl} alt={video.title} className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500" />
-              <div className="absolute inset-0 bg-black/40 group-hover:bg-black/20 transition-colors flex items-center justify-center">
-                <div className="w-14 h-14 rounded-full bg-white/20 backdrop-blur-sm border border-white/30 flex items-center justify-center group-hover:scale-110 transition-transform">
-                  <Play className="w-6 h-6 text-white fill-white ml-0.5" />
-                </div>
-              </div>
-              {/* Duration badge */}
-              <div className="absolute bottom-3 right-3 px-2 py-0.5 bg-black/70 rounded-md text-xs text-white font-medium">
-                {video.duration}
-              </div>
-              {/* Facebook ready badge */}
-              {video.facebookReady && (
-                <div className="absolute top-3 left-3 px-2 py-0.5 bg-blue-600/90 rounded-md text-xs text-white font-medium flex items-center gap-1">
-                  <Zap className="w-2.5 h-2.5" />
-                  Facebook Ready
-                </div>
-              )}
-            </div>
-
-            {/* Info */}
-            <div className="p-5">
-              <div className="flex items-start justify-between gap-3 mb-3">
-                <div>
-                  <h3 className="text-sm font-bold text-white mb-0.5">{video.title}</h3>
-                  <p className="text-xs text-white/40">{video.scene}</p>
-                </div>
-                <Badge className="bg-orange-500/15 text-orange-400 border-orange-500/20 text-xs flex-shrink-0">{video.style}</Badge>
-              </div>
-
-              {/* Stats row */}
-              <div className="flex items-center gap-4 mb-4 text-xs text-white/40">
-                <span className="flex items-center gap-1"><Clock className="w-3 h-3" />{video.duration}</span>
-                <span className="flex items-center gap-1"><Layers className="w-3 h-3" />{video.shots} shots</span>
-              </div>
-
-              {/* Reference images */}
-              <div className="mb-4">
-                <div className="flex items-center gap-1.5 mb-2">
-                  <Images className="w-3 h-3 text-green-400" />
-                  <span className="text-xs text-green-400 font-medium">Reference-locked characters</span>
-                </div>
-                <div className="flex gap-2">
-                  {video.referenceImages.map((ref) => (
-                    <div key={ref.name} className="relative group/ref">
-                      <div className="w-10 h-10 rounded-lg overflow-hidden ring-1 ring-green-500/30">
-                        <img src={ref.url} alt={ref.name} className="w-full h-full object-cover object-top" />
-                      </div>
-                      <div className="absolute -bottom-5 left-1/2 -translate-x-1/2 whitespace-nowrap text-xs text-white/50 opacity-0 group-hover/ref:opacity-100 transition-opacity pointer-events-none">
-                        {ref.name.split(" ")[0]}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-
-              {/* Tags */}
-              <div className="flex flex-wrap gap-1.5 mb-4">
-                {video.tags.map((tag) => (
-                  <span key={tag} className="text-xs bg-white/5 border border-white/8 px-2 py-0.5 rounded-full text-white/50">{tag}</span>
-                ))}
-              </div>
-
-              {/* Actions */}
-              <div className="flex gap-2">
-                <Button
-                  size="sm"
-                  className="flex-1 bg-orange-500 hover:bg-orange-600 text-white text-xs h-8 gap-1.5"
-                  onClick={() => setPlayingVideo(video)}
-                >
-                  <Play className="w-3 h-3 fill-white" />
-                  Watch
-                </Button>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  className="border-white/15 text-white/60 hover:text-white text-xs h-8 gap-1.5"
-                  onClick={() => window.open(video.videoUrl, "_blank")}
-                >
-                  <ExternalLink className="w-3 h-3" />
-                  Open
-                </Button>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  className="border-white/15 text-white/60 hover:text-white text-xs h-8 gap-1.5"
-                  onClick={() => {
-                    const a = document.createElement("a");
-                    a.href = video.videoUrl;
-                    a.download = `${video.title.replace(/\s+/g, "_")}.mp4`;
-                    document.body.appendChild(a);
-                    a.click();
-                    document.body.removeChild(a);
-                  }}
-                >
-                  <Download className="w-3 h-3" />
-                </Button>
-              </div>
-            </div>
-          </motion.div>
-        ))}
+    <motion.div
+      initial={{ opacity: 0, y: 12 }}
+      animate={{ opacity: 1, y: 0 }}
+      className="group bg-white/3 border border-white/8 hover:border-orange-500/30 rounded-xl overflow-hidden cursor-pointer transition-all"
+      onClick={onClick}
+    >
+      {/* Thumbnail */}
+      <div className="relative aspect-video bg-black overflow-hidden">
+        {video.thumbnailUrl ? (
+          <img
+            src={video.thumbnailUrl}
+            alt={video.title}
+            className="w-full h-full object-cover opacity-80 group-hover:opacity-100 transition-opacity"
+          />
+        ) : (
+          <div className="w-full h-full flex items-center justify-center bg-white/5">
+            <Film className="w-8 h-8 text-white/20" />
+          </div>
+        )}
+        <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
+          <div className="w-12 h-12 rounded-full bg-orange-500/90 flex items-center justify-center">
+            <Play className="w-5 h-5 text-white ml-0.5" />
+          </div>
+        </div>
+        {video.duration && (
+          <div className="absolute bottom-2 right-2 bg-black/70 text-white/80 text-xs px-1.5 py-0.5 rounded">
+            {video.duration}
+          </div>
+        )}
+        {video.facebookReady && (
+          <div className="absolute top-2 left-2">
+            <Badge className="bg-blue-500/80 text-white border-0 text-xs px-1.5 py-0">
+              <Zap className="w-2.5 h-2.5 mr-1" />FB Ready
+            </Badge>
+          </div>
+        )}
       </div>
 
-      {/* Player modal */}
-      {playingVideo && (
-        <VideoPlayerModal video={playingVideo} onClose={() => setPlayingVideo(null)} />
+      {/* Info */}
+      <div className="p-3">
+        <h3 className="text-sm font-semibold text-white line-clamp-1">{video.title}</h3>
+        <p className="text-xs text-white/40 mt-0.5 line-clamp-1">{video.subtitle}</p>
+        <div className="flex items-center gap-3 mt-2 text-xs text-white/30">
+          <span className="flex items-center gap-1"><Film className="w-3 h-3" />{video.shots} shots</span>
+          <span className="flex items-center gap-1"><Layers className="w-3 h-3" />{video.style}</span>
+          {video.hasVoice && <span className="text-green-400">🎙 Voice</span>}
+        </div>
+        {video.characters?.length > 0 && (
+          <div className="flex flex-wrap gap-1 mt-2">
+            {video.characters.slice(0, 3).map((c) => (
+              <span key={c} className="text-xs bg-white/5 text-white/40 px-1.5 py-0.5 rounded-full">{c}</span>
+            ))}
+            {video.characters.length > 3 && (
+              <span className="text-xs text-white/30">+{video.characters.length - 3}</span>
+            )}
+          </div>
+        )}
+        {video.referenceImages?.length > 0 && (
+          <div className="flex items-center gap-1 mt-2 text-xs text-white/30">
+            <Images className="w-3 h-3" />{video.referenceImages.length} reference image{video.referenceImages.length > 1 ? "s" : ""}
+          </div>
+        )}
+      </div>
+    </motion.div>
+  )
+}
+
+// ─── Main Page ────────────────────────────────────────────────────────────────
+
+export default function VideosPage() {
+  const { videos, loading } = useVideos()
+  const [selected, setSelected] = useState<VideoRecord | null>(null)
+
+  if (loading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="flex flex-col items-center gap-3 text-white/40">
+          <Loader2 className="w-8 h-8 animate-spin" />
+          <p className="text-sm">Loading videos…</p>
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="min-h-screen p-6 max-w-6xl mx-auto">
+      {/* Header */}
+      <div className="mb-8">
+        <h1 className="text-2xl font-bold text-white">My Videos</h1>
+        <p className="text-sm text-white/40 mt-1">
+          {videos.length} video{videos.length !== 1 ? "s" : ""} generated
+        </p>
+      </div>
+
+      {/* Grid */}
+      {videos.length === 0 ? (
+        <div className="flex flex-col items-center justify-center py-24 text-center">
+          <div className="w-16 h-16 rounded-2xl bg-white/5 flex items-center justify-center mb-4">
+            <Film className="w-8 h-8 text-white/20" />
+          </div>
+          <h2 className="text-white/50 font-medium mb-2">No videos yet</h2>
+          <p className="text-white/30 text-sm max-w-sm">
+            Generate clips from a scene and click "Save to My Videos" to see them here.
+          </p>
+          <a href="/generate" className="mt-4 text-orange-400 text-sm hover:text-orange-300 underline">
+            Go to Generate →
+          </a>
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+          {videos.map((video) => (
+            <VideoCard key={video.id} video={video} onClick={() => setSelected(video)} />
+          ))}
+        </div>
+      )}
+
+      {/* Modal */}
+      {selected && (
+        <VideoPlayerModal video={selected} onClose={() => setSelected(null)} />
       )}
     </div>
-  );
+  )
 }

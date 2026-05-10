@@ -491,34 +491,71 @@ function GeneratePageInner() {
     setPipeline("partial")
   }
 
-  // ── Save to Videos ──
+  // ── Save to Videos (merge clips first) ──
+  const [saving, setSaving] = useState(false)
+  const [saveError, setSaveError] = useState<string | null>(null)
+
   const handleSaveToVideos = async () => {
     const completedClips = shotStates.filter((s) => s.videoPhase === "done" && s.videoUrl)
     if (!completedClips.length || !scene) return
 
-    const primaryVideoUrl = completedClips[0].videoUrl!
+    setSaving(true)
+    setSaveError(null)
+
+    const videoUrls = completedClips.map((s) => s.videoUrl!)
     const thumbnailUrl = completedClips[0].imageUrl ?? ""
     const styleName = STYLES.find((s) => s.id === selectedStyle)?.label ?? selectedStyle
+    const totalSecs = completedClips.reduce((acc, s) => {
+      const shot = scene.shotBreakdown?.find((sh) => sh.id === s.shotId)
+      return acc + (shot?.duration ?? 10)
+    }, 0)
+
+    // Merge all clips into one video
+    let finalVideoUrl = videoUrls[0]
+    let mergeWarning: string | null = null
+    if (videoUrls.length > 1) {
+      try {
+        const mergeRes = await fetch("/api/merge-clips", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ videoUrls }),
+        })
+        const mergeData = await mergeRes.json() as { videoUrl: string; warning?: string }
+        if (mergeData.videoUrl) finalVideoUrl = mergeData.videoUrl
+        if (mergeData.warning) mergeWarning = mergeData.warning
+      } catch (err) {
+        mergeWarning = `Merge error: ${err instanceof Error ? err.message : String(err)}`
+      }
+    }
+
+    const mins = Math.floor(totalSecs / 60)
+    const secs = totalSecs % 60
+    const durationLabel = mins > 0 ? `${mins}:${String(secs).padStart(2, "0")}` : `${secs}s`
 
     const record: VideoRecord = {
       id: `video-${Date.now()}`,
       title: scene.title,
-      subtitle: `${styleName} · ${completedClips.length} clip${completedClips.length > 1 ? "s" : ""}`,
-      videoUrl: primaryVideoUrl,
+      subtitle: mergeWarning
+        ? `${styleName} · ${completedClips.length} clips (${mergeWarning})`
+        : `${styleName} · ${completedClips.length} clips merged`,
+      videoUrl: finalVideoUrl,
       thumbnailUrl,
-      duration: `${completedClips.length * (scene.shotBreakdown?.[0]?.duration ?? 10)}s`,
+      duration: durationLabel,
       shots: completedClips.length,
       scene: scene.title,
       style: styleName,
       characters: sceneCharacters.map((c) => c.name),
-      referenceImages: [],
+      referenceImages: sceneCharacters
+        .filter((c) => c.imageUrl)
+        .map((c) => ({ name: c.name, url: c.imageUrl! })),
       generatedAt: new Date().toISOString(),
       facebookReady: true,
-      tags: ["cinescript", selectedStyle, scene.chapter ?? ""],
+      tags: ["cinescript", selectedStyle, scene.chapter ?? ""].filter(Boolean),
       hasVoice: false,
     }
 
     await addVideo(record)
+    setSaving(false)
     setSaved(true)
   }
 
@@ -745,11 +782,11 @@ function GeneratePageInner() {
 
             {(pipeline === "done" || pipeline === "partial") && doneCount > 0 && (
               <Button
-                className={cn("flex-1 font-semibold h-11 gap-2", saved ? "bg-green-600 hover:bg-green-700" : "bg-white/10 hover:bg-white/15 text-white border border-white/15")}
+                className={cn("flex-1 font-semibold h-11 gap-2", saved ? "bg-green-600 hover:bg-green-700" : saving ? "bg-orange-500/50 cursor-wait" : "bg-white/10 hover:bg-white/15 text-white border border-white/15")}
                 onClick={handleSaveToVideos}
-                disabled={saved}
+                disabled={saved || saving}
               >
-                {saved ? <><Check className="w-4 h-4" />Saved!</> : <><Save className="w-4 h-4" />Save to Videos</>}
+                {saved ? <><Check className="w-4 h-4" />Saved!</> : saving ? <><Loader2 className="w-4 h-4 animate-spin" />Merging clips…</> : <><Save className="w-4 h-4" />Save to Videos</>}
               </Button>
             )}
           </div>
@@ -787,7 +824,7 @@ function GeneratePageInner() {
               <Check className="w-6 h-6 text-green-400 mx-auto mb-2" />
               <p className="text-sm font-semibold text-green-300">All {doneCount} clips generated!</p>
               <p className="text-xs text-green-400/60 mt-1">
-                {saved ? "Saved to Videos page." : "Click Save to Videos to add them to your library."}
+                {saved ? "Saved to Videos page." : saving ? "Merging clips into one video…" : "Click Save to Videos to merge clips and add to your library."}
               </p>
             </motion.div>
           )}
