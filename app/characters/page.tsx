@@ -517,36 +517,64 @@ function AddPhotoModal({
     setError("")
   }
 
-  const handleFiles = (files: FileList | null) => {
+  const handleFiles = async (files: FileList | null) => {
     if (!files || files.length === 0) return
     setUploading(true)
     setError("")
-    const readers: Promise<string | null>[] = []
-    Array.from(files).forEach((file) => {
-      if (!file.type.startsWith("image/")) { setError("Only image files accepted"); return }
-      if (file.size > 4 * 1024 * 1024) { setError(`${file.name} is over 4 MB — try a smaller file`); return }
-      readers.push(new Promise((resolve, reject) => {
+
+    const validFiles = Array.from(files).filter((file) => {
+      if (!file.type.startsWith("image/")) { setError("Only image files accepted"); return false }
+      if (file.size > 10 * 1024 * 1024) { setError(`${file.name} is over 10 MB — try a smaller file`); return false }
+      return true
+    })
+
+    if (validFiles.length === 0) { setUploading(false); return }
+
+    // Read each file as base64 then upload to Supabase Storage via API route.
+    // Storing raw base64 in localStorage/Supabase rows silently fails once
+    // images exceed ~500 KB — always upload and store the HTTPS URL instead.
+    const uploadPromises = validFiles.map((file) =>
+      new Promise<string | null>((resolve) => {
         const fr = new FileReader()
-        fr.onload = (e) => resolve(e.target?.result as string)
-        fr.onerror = () => reject(new Error(`Failed to read ${file.name}`))
+        fr.onload = async (e) => {
+          const dataUrl = e.target?.result as string
+          try {
+            const res = await fetch("/api/upload-photo", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ dataUrl, fileName: file.name }),
+            })
+            const data = await res.json() as { url?: string; error?: string }
+            if (!res.ok || data.error) {
+              console.error("[upload-photo]", data.error)
+              resolve(null)
+            } else {
+              resolve(data.url ?? null)
+            }
+          } catch (err) {
+            console.error("[upload-photo] fetch error:", err)
+            resolve(null)
+          }
+        }
+        fr.onerror = () => resolve(null)
         fr.readAsDataURL(file)
-      }))
-    })
-    if (readers.length === 0) { setUploading(false); return }
-    Promise.allSettled(readers).then((results) => {
-      const successful = results
-        .filter((r): r is PromiseFulfilledResult<string> => r.status === "fulfilled" && r.value !== null)
-        .map((r) => r.value)
-      const failed = results.filter((r) => r.status === "rejected").length
-      if (failed > 0) setError(`${failed} file(s) couldn't be read — try again`)
-      if (successful.length > 0) {
-        setPreviews((p) => [...p, ...successful])
-        setError("")
-      }
-      setUploading(false)
-      // Reset input so the same file can be re-selected if needed
-      if (fileRef.current) fileRef.current.value = ""
-    })
+      })
+    )
+
+    const results = await Promise.allSettled(uploadPromises)
+    const uploaded = results
+      .filter((r): r is PromiseFulfilledResult<string> => r.status === "fulfilled" && r.value !== null)
+      .map((r) => r.value)
+    const failed = validFiles.length - uploaded.length
+
+    if (failed > 0) setError(`${failed} photo(s) failed to upload — check Supabase Storage is enabled`)
+    if (uploaded.length > 0) {
+      setPreviews((p) => [...p, ...uploaded])
+      if (failed === 0) setError("")
+    }
+
+    setUploading(false)
+    if (fileRef.current) fileRef.current.value = ""
   }
 
   const removePreview = (i: number) => setPreviews((p) => p.filter((_, idx) => idx !== i))
