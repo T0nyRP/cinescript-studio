@@ -24,20 +24,50 @@ function extractVideoUrl(output: unknown): string | null {
 }
 
 function extractImageUrl(output: unknown): string | null {
-  if (!output || typeof output !== "object") return null
+  if (!output) return null
+  // Array of strings: ["https://..."]
+  if (Array.isArray(output)) {
+    for (const item of output) {
+      if (typeof item === "string" && item.startsWith("http")) return item
+      const nested = extractImageUrl(item)
+      if (nested) return nested
+    }
+    return null
+  }
+  if (typeof output !== "object") return null
   const o = output as Record<string, unknown>
-  // { images: [{ url }] }
-  if (Array.isArray(o.images) && o.images.length > 0) {
-    const first = o.images[0] as Record<string, unknown>
-    if (typeof first.url === "string") return first.url
-    if (typeof first.imageUrl === "string") return first.imageUrl
-  }
+  // { imageUrl } or { image_url }
   if (typeof o.imageUrl === "string") return o.imageUrl
-  if (typeof o.url === "string") return o.url
-  if (o.image && typeof (o.image as Record<string, unknown>).url === "string") {
-    return (o.image as Record<string, unknown>).url as string
+  if (typeof o.image_url === "string") return o.image_url
+  // { url }
+  if (typeof o.url === "string" && (o.url as string).startsWith("http")) return o.url as string
+  // { images: [{ url } | "https://..."] }
+  if (Array.isArray(o.images) && o.images.length > 0) {
+    for (const item of o.images) {
+      if (typeof item === "string" && item.startsWith("http")) return item
+      if (typeof item === "object" && item !== null) {
+        const i = item as Record<string, unknown>
+        if (typeof i.url === "string") return i.url
+        if (typeof i.imageUrl === "string") return i.imageUrl
+        if (typeof i.image_url === "string") return i.image_url
+      }
+    }
   }
+  // { data: [{ url }] }  — OpenAI image format
+  if (Array.isArray(o.data) && o.data.length > 0) {
+    const first = o.data[0] as Record<string, unknown>
+    if (typeof first.url === "string") return first.url
+    if (typeof first.b64_json === "string") return `data:image/jpeg;base64,${first.b64_json}`
+  }
+  // { image: { url } }
+  if (o.image && typeof o.image === "object") {
+    const i = o.image as Record<string, unknown>
+    if (typeof i.url === "string") return i.url
+  }
+  // { output: { ... } } — nested wrapper
   if (o.output && typeof o.output === "object") return extractImageUrl(o.output)
+  // { result: { ... } }
+  if (o.result && typeof o.result === "object") return extractImageUrl(o.result)
   return null
 }
 
@@ -93,18 +123,21 @@ export async function POST(request: NextRequest) {
       if (assetType === "image") {
         const imageUrl = extractImageUrl(data.output)
         if (!imageUrl) {
+          // Log for Vercel Function Logs and return raw output for diagnosis
+          console.error("[poll-galaxy-status] extractImageUrl failed. Raw output:", JSON.stringify(data.output))
           return NextResponse.json({
             status: "error",
-            error: "Image generation completed but no URL found in output",
+            error: `Image completed but URL not found. Raw output: ${JSON.stringify(data.output).slice(0, 500)}`,
           })
         }
         return NextResponse.json({ status: "completed", imageUrl })
       } else {
         const videoUrl = extractVideoUrl(data.output)
         if (!videoUrl) {
+          console.error("[poll-galaxy-status] extractVideoUrl failed. Raw output:", JSON.stringify(data.output))
           return NextResponse.json({
             status: "error",
-            error: "Video generation completed but no URL found in output",
+            error: `Video completed but URL not found. Raw output: ${JSON.stringify(data.output).slice(0, 500)}`,
           })
         }
         return NextResponse.json({ status: "completed", videoUrl })
