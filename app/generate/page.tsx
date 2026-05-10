@@ -388,10 +388,12 @@ function GeneratePageInner() {
     if (!spokenLines.length) return
 
     // Find a character with a voice assigned — prefer the first speaker
-    let voiceId: string | undefined
-    let stability = 0.65
-    let similarityBoost = 0.80
-    let styleExaggeration = 10
+    // Josh (ElevenLabs) — deep cinematic narrator, used when no character voice assigned
+    const FALLBACK_NARRATOR_VOICE_ID = "TxGEqnHWrfWFTfGW9XjX"
+    let voiceId: string = FALLBACK_NARRATOR_VOICE_ID
+    let stability = 65          // 0-100 scale (matching VoiceProfile)
+    let similarityBoost = 80    // 0-100 scale
+    let styleExaggeration = 10  // 0-100 scale
 
     for (const line of spokenLines) {
       const char = shotChars.find(
@@ -399,14 +401,14 @@ function GeneratePageInner() {
       )
       if (char?.voice?.id) {
         voiceId = char.voice.id
-        stability = char.voice.stability ?? 0.65
-        similarityBoost = char.voice.similarityBoost ?? 0.80
+        stability = char.voice.stability ?? 65
+        similarityBoost = char.voice.similarityBoost ?? 80
         styleExaggeration = char.voice.styleExaggeration ?? 10
         break
       }
     }
 
-    if (!voiceId) return  // No voice assigned — skip TTS silently
+    // voiceId defaults to FALLBACK_NARRATOR_VOICE — always generates audio
 
     // Combine all spoken text for this shot into one TTS call
     const combinedText = spokenLines.map((l) => l.line).join(" … ")

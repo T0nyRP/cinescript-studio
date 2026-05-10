@@ -58,7 +58,10 @@ Return this JSON structure — keep ALL string values SHORT (under 100 chars) to
           "lighting": "Lighting type",
           "duration": 10,
           "characters": ["Character name"],
-          "prompt": "Cinematic image prompt under 100 chars"
+          "prompt": "Cinematic image prompt under 100 chars",
+          "dialogue": [
+            { "characterName": "Exact name", "line": "Spoken line under 100 chars", "type": "spoken" }
+          ]
         }
       ]
     }
@@ -75,6 +78,8 @@ STRICT RULES:
 - shot type: one of "wide" "medium" "close-up" "aerial" "tracking"
 - shot angle: one of "eye-level" "low-angle" "high-angle" "bird-eye"
 - scene characters must be exact names from the characters array
+- dialogue: extract 0-2 actual spoken lines per shot from the manuscript text; use [] if the shot has no dialogue
+- dialogue.type: "spoken" for direct speech, "narration" for voice-over/internal monologue
 - Return ONLY the JSON — fully closed, no trailing content`;
 }
 

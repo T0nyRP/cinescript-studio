@@ -4,13 +4,45 @@ export const runtime = "nodejs"
 export const maxDuration = 60
 
 const GALAXY_API = "https://api.galaxy.ai/api/v1"
-const MODEL = "elevenlabs_v3_tts"
+
+// Voice provider detection — Minimax voices start with "Voice", ElevenLabs do not
+function detectProvider(voiceId: string): "minimax" | "elevenlabs" {
+  return voiceId.startsWith("Voice") ? "minimax" : "elevenlabs"
+}
+
+// Minimax TTS node type (REST API underscore format)
+const MINIMAX_MODEL = "minimax_tts"
+// ElevenLabs TTS node type
+const ELEVENLABS_MODEL = "elevenlabs_v3_tts"
+
+function buildGalaxyInput(
+  text: string,
+  voiceId: string,
+  provider: "minimax" | "elevenlabs",
+  opts: { stability: number; similarityBoost: number; styleExaggeration: number; speed: number }
+) {
+  if (provider === "minimax") {
+    return {
+      prompt: text,          // Minimax uses "prompt" not "text"
+      voice_id: voiceId,
+      speed: opts.speed,
+    }
+  }
+  return {
+    text,
+    voice_id: voiceId,
+    stability: opts.stability,
+    similarityBoost: opts.similarityBoost,
+    style: opts.styleExaggeration,
+    speed: opts.speed,
+  }
+}
 
 function extractAudioUrl(output: unknown): string | null {
   if (!output || typeof output !== "object") return null
   const o = output as Record<string, unknown>
   if (typeof o.audioUrl === "string") return o.audioUrl
-  if (typeof o.url === "string") return o.url
+  if (typeof o.url === "string" && (o.url as string).startsWith("http")) return o.url as string
   if (o.audio && typeof (o.audio as Record<string, unknown>).url === "string") {
     return (o.audio as Record<string, unknown>).url as string
   }
@@ -64,24 +96,24 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "text and voiceId are required" }, { status: 400 })
   }
 
+  // Detect provider and choose model + input schema
+  const provider = detectProvider(voiceId)
+  const model = provider === "minimax" ? MINIMAX_MODEL : ELEVENLABS_MODEL
+  const ttsInput = buildGalaxyInput(text, voiceId, provider, {
+    stability,
+    similarityBoost,
+    styleExaggeration,
+    speed,
+  })
+
   try {
-    // Submit job to Galaxy AI
-    const submitRes = await fetch(`${GALAXY_API}/nodes/${MODEL}/run`, {
+    const submitRes = await fetch(`${GALAXY_API}/nodes/${model}/run`, {
       method: "POST",
       headers: {
         "Authorization": `Bearer ${apiKey}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({
-        input: {
-          text,
-          voice_id: voiceId,
-          stability,
-          similarityBoost,
-          style: styleExaggeration,
-          speed,
-        },
-      }),
+      body: JSON.stringify({ input: ttsInput }),
     })
 
     if (!submitRes.ok) {
@@ -98,7 +130,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "No runId returned from Galaxy AI" }, { status: 500 })
     }
 
-    // Poll synchronously — TTS is fast, usually 5-20 seconds
+    // Poll synchronously — TTS is fast (typically 5–20 seconds)
     const deadline = Date.now() + 55_000
     const pollInterval = 2_500
 
@@ -125,7 +157,7 @@ export async function POST(request: NextRequest) {
         if (!audioUrl) {
           console.error("[generate-dialogue-tts] extractAudioUrl failed. Raw output:", JSON.stringify(pollData.output))
           return NextResponse.json(
-            { error: `TTS completed but no audio URL found. Raw output: ${JSON.stringify(pollData.output).slice(0, 300)}` },
+            { error: `TTS completed but no audio URL found. Raw: ${JSON.stringify(pollData.output).slice(0, 300)}` },
             { status: 500 }
           )
         }
