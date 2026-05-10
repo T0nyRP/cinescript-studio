@@ -10,10 +10,18 @@ const GALAXY_API = "https://api.galaxy.ai/api/v1"
 function extractVideoUrl(output: unknown): string | null {
   if (!output || typeof output !== "object") return null
   const o = output as Record<string, unknown>
+  // { result: ["https://...mp4"] }  — actual Galaxy AI shape
+  if (Array.isArray(o.result) && o.result.length > 0) {
+    for (const item of o.result) {
+      if (typeof item === "string" && item.startsWith("http")) return item
+    }
+  }
   if (typeof o.videoUrl === "string") return o.videoUrl
-  if (typeof o.url === "string") return o.url
-  if (o.video && typeof (o.video as Record<string, unknown>).url === "string") {
-    return (o.video as Record<string, unknown>).url as string
+  if (typeof o.video_url === "string") return o.video_url
+  if (typeof o.url === "string" && (o.url as string).startsWith("http")) return o.url as string
+  if (o.video && typeof o.video === "object") {
+    const v = o.video as Record<string, unknown>
+    if (typeof v.url === "string") return v.url
   }
   if (Array.isArray(o.videos) && o.videos.length > 0) {
     const first = o.videos[0] as Record<string, unknown>
@@ -63,6 +71,12 @@ function extractImageUrl(output: unknown): string | null {
   if (o.image && typeof o.image === "object") {
     const i = o.image as Record<string, unknown>
     if (typeof i.url === "string") return i.url
+  }
+  // { result: ["https://..."] }  — Galaxy AI actual shape
+  if (Array.isArray(o.result) && o.result.length > 0) {
+    for (const item of o.result) {
+      if (typeof item === "string" && item.startsWith("http")) return item
+    }
   }
   // { output: { ... } } — nested wrapper
   if (o.output && typeof o.output === "object") return extractImageUrl(o.output)
