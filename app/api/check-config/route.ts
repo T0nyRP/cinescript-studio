@@ -94,7 +94,7 @@ export async function GET() {
       if (pollRes.ok && typeof parsed === "object" && parsed !== null) {
         const p = parsed as Record<string, unknown>
         // Stop on any terminal status
-        if (typeof p.status === "string" && !["pending","queued","running","processing"].includes(p.status)) {
+        const st = (p.status as string ?? "").toLowerCase(); if (st && !["pending","queued","running","processing"].includes(st)) {
           result.finalStatus = `TERMINAL — status="${p.status}", output=${JSON.stringify(p.output ?? null).slice(0, 300)}`
           break
         }

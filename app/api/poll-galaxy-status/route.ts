@@ -86,7 +86,10 @@ export async function POST(request: NextRequest) {
       error?: string
     }
 
-    if (data.status === "completed") {
+    // Galaxy AI returns uppercase statuses: QUEUED, RUNNING, COMPLETED, FAILED
+    const status = (data.status ?? "").toLowerCase()
+
+    if (status === "completed") {
       if (assetType === "image") {
         const imageUrl = extractImageUrl(data.output)
         if (!imageUrl) {
@@ -108,7 +111,7 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    if (data.status === "failed") {
+    if (status === "failed") {
       return NextResponse.json({
         status: "failed",
         error: data.error ?? `${assetType} generation failed on Galaxy AI`,
